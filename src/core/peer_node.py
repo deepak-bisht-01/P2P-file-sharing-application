@@ -5,8 +5,8 @@ import logging
 from typing import Dict, Tuple, Optional
 
 # import these from your backend
-from core.connection_manager import ConnectionManager
-from backend.peer_registry import PeerRegistry
+from src.core.connection_manager import ConnectionManager
+from src.backend.peer_registry import PeerRegistry
 
 class PeerNode:
     def __init__(self, host: str = '0.0.0.0', port: int = 5000, peer_id: str = None):

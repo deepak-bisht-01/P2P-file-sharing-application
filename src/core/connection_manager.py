@@ -3,7 +3,7 @@ import threading
 from typing import Dict, Tuple, List
 import logging
 from collections import defaultdict
-from backend.models import Peer
+from src.backend.models import Peer
  # to avoid circular import
 class Connection:
     def __init__(self, socket: socket.socket, address: Tuple[str, int], peer_id: str = None):

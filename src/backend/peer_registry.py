@@ -2,7 +2,7 @@ import threading
 from typing import Dict, List, Optional, Set
 from datetime import datetime, timedelta
 import logging
-from backend.models import Peer
+from src.backend.models import Peer
 
 
 class PeerRegistry:
