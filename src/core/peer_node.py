@@ -63,20 +63,24 @@ class PeerNode:
                     self.logger.error(f"Error accepting connection: {e}")
     
     def connect_to_peer(self, target_host: str, target_port: int) -> Optional[socket.socket]:
-        """Connect to another peer"""
         try:
             peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             peer_socket.connect((target_host, target_port))
             self.logger.info(f"Connected to peer at {target_host}:{target_port}")
-            
-            # ✅ Add connection into manager
+        
+        # Add to manager under temp ID
             if self.connection_manager:
                 self.connection_manager.add_connection(peer_socket, (target_host, target_port))
-            
+
+            # 🔑 Immediately send handshake with our peer_id
+                handshake = {"type": "handshake", "peer_id": self.peer_id}
+                self.connection_manager.send_message(f"{target_host}:{target_port}", json.dumps(handshake).encode())
+
             return peer_socket
         except Exception as e:
             self.logger.error(f"Failed to connect to peer: {e}")
             return None
+
     
     def stop(self):
         """Stop the peer node"""
@@ -86,4 +90,15 @@ class PeerNode:
 
     # placeholder handler
     def _handle_message(self, peer_id: str, message: str):
+        try:
+            msg = json.loads(message)
+            if msg.get("type") == "handshake":
+                real_id = msg["peer_id"]
+                self.connection_manager.associate_temp_id_with_peer_id(peer_id, real_id)
+                self.logger.info(f"✓ Handshake from {real_id}")
+                return
+        except Exception:
+            pass  # not JSON or not a handshake
+
+    # Otherwise treat it as normal app message
         self.logger.info(f"Message from {peer_id}: {message}")
