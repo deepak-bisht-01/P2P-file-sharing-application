@@ -9,14 +9,14 @@ import yaml
 import os
 
 # Import all components
-from core.peer_node import PeerNode
-from core.connection_manager import ConnectionManager
-from core.message_protocol import MessageProtocol, MessageType
-from security.peer_identity import PeerIdentity
-from security.message_validator import MessageValidator
-from backend.message_queue import MessageQueue
-from backend.peer_registry import PeerRegistry
-from backend.models import Peer, Message
+from src.core.peer_node import PeerNode
+from src.core.connection_manager import ConnectionManager
+from src.core.message_protocol import MessageProtocol, MessageType
+from src.security.peer_identity import PeerIdentity
+from src.security.message_validator import MessageValidator
+from src.backend.message_queue import MessageQueue
+from src.backend.peer_registry import PeerRegistry
+from src.backend.models import Peer, Message
 
 # Initialize colorama for Windows support
 init()
