@@ -48,29 +48,40 @@ class ConnectionManager:
             self.logger.info(f"Added connection for peer {peer_id}")
     
     def _handle_connection(self, conn: Connection):
-        """Handle incoming messages from a connection"""
+   
         buffer = b""
-        
+    
         while conn.is_active:
             try:
                 data = conn.socket.recv(4096)
                 if not data:
                     break
-                
+            
                 buffer += data
-                
-                # Try to extract complete messages
+            
+            # Try to extract complete messages
                 while b'\n' in buffer:
                     line, buffer = buffer.split(b'\n', 1)
+                    msg = line.decode('utf-8').strip()
+
+                # --- Handshake handling ---
+                    if msg.startswith("HELLO"):
+                        real_id = msg.split(" ", 1)[1]
+                        self.on_handshake(conn, real_id)
+                        self.logger.info(f"Handshake complete: {real_id}")
+                        continue
+
+                # --- Normal message handling ---
                     if self.message_handler:
-                        self.message_handler(conn.peer_id, line.decode('utf-8'))
-                        
+                        self.message_handler(conn.peer_id, msg)
+                    
             except Exception as e:
                 self.logger.error(f"Error handling connection {conn.peer_id}: {e}")
                 break
-        
-        # Clean up connection
+    
+    # Clean up connection
         self.remove_connection(conn.peer_id)
+
     
     def send_message(self, peer_id: str, message: bytes) -> bool:
         """Send message to a specific peer"""
