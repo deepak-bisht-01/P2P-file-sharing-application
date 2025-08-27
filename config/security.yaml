@@ -1,0 +1,29 @@
+# Security Configuration for P2P Messaging
+
+identity:
+  key_size: 2048
+  algorithm: RSA
+  storage_encrypted: false  # Week 3: Set to true
+
+validation:
+  max_message_age_seconds: 300
+  max_message_size_bytes: 1048576
+  max_text_length: 10000
+  enforce_peer_verification: false  # Week 2: Set to true
+
+network:
+  allowed_ports:
+    - 5000
+    - 5001
+    - 5002
+  max_connections_per_peer: 1
+  connection_timeout_seconds: 30
+
+rate_limiting:
+  enabled: false  # Week 2: Enable
+  max_messages_per_minute: 60
+  max_connections_per_minute: 10
+
+logging:
+  log_sensitive_data: false
+  mask_peer_ids: false

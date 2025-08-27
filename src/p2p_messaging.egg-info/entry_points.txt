@@ -1,0 +1,2 @@
+[console_scripts]
+p2p-chat = cli.interface:main

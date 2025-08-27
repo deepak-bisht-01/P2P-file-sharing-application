@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+peer_identity.json
+identity_*.json
+logs/
+*.pem
