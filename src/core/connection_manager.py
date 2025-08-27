@@ -132,3 +132,12 @@ class ConnectionManager:
 
             self.logger.info(f"Associated temp_id {temp_id} with real_id {real_id}")
             return True
+    def on_handshake(self, conn, peer_id_from_handshake):
+    # remove the temporary mapping
+        old_id = conn.peer_id
+        if old_id in self.connections:
+            del self.connections[old_id]
+
+    # replace with proper peer_id
+        conn.peer_id = peer_id_from_handshake
+        self.connections[peer_id_from_handshake] = conn
