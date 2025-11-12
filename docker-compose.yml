@@ -1,0 +1,45 @@
+version: '3.8'
+
+services:
+  peer1:
+    build: .
+    container_name: p2p-peer1
+    environment:
+      - PEER_PORT=5001
+    ports:
+      - "5001:5001"
+    command: p2p-chat --port 5001
+    networks:
+      - p2p-network
+    volumes:
+      - ./logs/peer1:/app/logs
+
+  peer2:
+    build: .
+    container_name: p2p-peer2
+    environment:
+      - PEER_PORT=5002
+    ports:
+      - "5002:5002"
+    command: p2p-chat --port 5002
+    networks:
+      - p2p-network
+    volumes:
+      - ./logs/peer2:/app/logs
+
+  peer3:
+    build: .
+    container_name: p2p-peer3
+    environment:
+      - PEER_PORT=5003
+    ports:
+      - "5003:5003"
+    command: p2p-chat --port 5003
+    networks:
+      - p2p-network
+    volumes:
+      - ./logs/peer3:/app/logs
+
+networks:
+  p2p-network:
+    driver: bridge
