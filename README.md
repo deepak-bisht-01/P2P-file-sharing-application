@@ -4,11 +4,14 @@ A peer-to-peer messaging and file sharing application with a modern React fronte
 
 ## Features
 
-- **P2P Networking**: Direct peer-to-peer connections for messaging
-- **Real-time Dashboard**: React-based UI for monitoring peers and messages
-- **REST API**: FastAPI backend exposing peer operations
+- **P2P Networking**: Direct peer-to-peer connections for messaging and file sharing
+- **File Transfer**: Chunked file transfer with multi-peer download support for faster speeds
+- **Real-time Dashboard**: React-based UI for monitoring peers, messages, and file transfers
+- **Interactive UI**: Real-time download progress display with transfer speed and status
+- **REST API**: FastAPI backend exposing peer operations and file transfer endpoints
 - **Message Queue**: Thread-safe message processing with priority support
 - **Peer Registry**: Automatic peer discovery and status tracking
+- **Serverless Architecture**: Fully decentralized - no central server required
 
 ## Project Structure
 
@@ -16,14 +19,17 @@ A peer-to-peer messaging and file sharing application with a modern React fronte
 P2P-file-sharing-application/
 ├── src/                    # Python backend source
 │   ├── backend/           # API and service layer
+│   │   └── file_transfer.py  # File transfer manager
 │   ├── core/              # Core P2P networking
 │   ├── security/          # Identity and validation
 │   └── cli/               # Command-line interface
 ├── frontend/              # React frontend
 │   └── src/
 │       ├── components/    # React components
+│       │   └── FileTransferPanel.tsx  # File transfer UI
 │       ├── api.ts         # API client
 │       └── types.ts       # TypeScript types
+├── shared_files/          # Directory for shared/downloaded files
 ├── config/                # Configuration files
 ├── logs/                  # Application logs
 └── requirements.txt       # Python dependencies
@@ -99,6 +105,16 @@ The frontend will be available at `http://localhost:5173` (or the port Vite assi
 3. **Open the dashboard** in your browser
 4. **Connect to peers** by entering their host and port
 5. **Send messages** by selecting a peer and typing a message
+6. **Share files** by uploading files through the File Transfer panel
+7. **Download files** by selecting available files from connected peers
+8. **Monitor transfers** in real-time with progress bars and speed indicators
+
+### File Transfer Features
+
+- **Multi-Peer Download**: When multiple peers have the same file, chunks are downloaded from different peers simultaneously, significantly increasing download speed
+- **Chunked Transfer**: Large files are split into chunks (default 64KB) for efficient transfer and resumability
+- **Real-time Progress**: Live updates showing download progress, transfer speed, and status for each file
+- **Interactive UI**: Upload files, browse available files from peers, and manage active transfers
 
 ## Docker Deployment
 
@@ -123,12 +139,86 @@ Logging configuration is in `config/logging.yaml`. Logs are written to the `logs
 
 ## API Endpoints
 
+### Peer Management
 - `GET /api/status` - Get peer status and statistics
 - `GET /api/peers` - List all known peers
 - `GET /api/peers/connected` - List connected peers
 - `POST /api/peers/connect` - Connect to a peer
+
+### Messaging
 - `POST /api/messages` - Send a message
 - `GET /api/messages` - Get message history
+
+### File Transfer
+- `POST /api/files/upload` - Upload a file to share with peers
+- `GET /api/files/list` - List available files from connected peers
+- `POST /api/files/download` - Request to download a file from a peer
+- `GET /api/files/transfers` - Get status of active file transfers
+- `GET /api/files/transfers/{transfer_id}` - Get detailed status of a specific transfer
+
+## Operating System Concepts Used
+
+This project implements several fundamental operating system concepts:
+
+### 1. **Threading and Concurrency**
+- **Location**: `src/backend/file_transfer.py`, `src/core/connection_manager.py`, `src/backend/message_queue.py`
+- **Implementation**: 
+  - Multiple threads handle concurrent file chunk downloads from different peers
+  - Each peer connection runs in its own thread for non-blocking I/O
+  - Message queue processor runs in a separate daemon thread
+  - File transfer manager uses thread pools for parallel chunk requests
+- **OS Concept**: Multi-threading enables concurrent operations, improving performance and responsiveness
+
+### 2. **File I/O Operations**
+- **Location**: `src/backend/file_transfer.py`
+- **Implementation**:
+  - File reading/writing using Python's `open()` with binary mode
+  - Chunked file access using `seek()` and `read()` for random access
+  - Atomic file operations to prevent corruption during concurrent writes
+  - File metadata management (size, checksums, chunk mapping)
+- **OS Concept**: Direct file system operations for persistent storage and efficient data access
+
+### 3. **Socket Programming and Network I/O**
+- **Location**: `src/core/peer_node.py`, `src/core/connection_manager.py`
+- **Implementation**:
+  - TCP socket creation, binding, and listening (`socket.socket()`, `bind()`, `listen()`)
+  - Non-blocking connection handling with `accept()` in separate threads
+  - Socket send/receive operations with error handling
+  - Connection state management and cleanup
+- **OS Concept**: Network socket abstraction for inter-process communication across network boundaries
+
+### 4. **Process Synchronization (Locks)**
+- **Location**: `src/backend/file_transfer.py`, `src/core/connection_manager.py`, `src/backend/message_queue.py`
+- **Implementation**:
+  - `threading.RLock()` (reentrant locks) for thread-safe access to shared data structures
+  - Lock-protected critical sections for connection dictionaries and transfer state
+  - Queue synchronization using `queue.PriorityQueue` for thread-safe message passing
+- **OS Concept**: Mutual exclusion prevents race conditions in multi-threaded environments
+
+### 5. **Memory Management**
+- **Location**: Throughout the codebase
+- **Implementation**:
+  - Buffer management for chunked file transfers (64KB chunks)
+  - Memory-efficient streaming for large files
+  - Proper resource cleanup (socket.close(), file.close())
+  - Garbage collection of completed transfers
+- **OS Concept**: Efficient memory usage and resource deallocation
+
+### 6. **Inter-Process Communication (IPC)**
+- **Location**: `src/core/message_protocol.py`, `src/backend/service.py`
+- **Implementation**:
+  - Message-based communication protocol between peers
+  - JSON serialization/deserialization for structured data exchange
+  - Request-response pattern for file metadata and chunk requests
+- **OS Concept**: Structured communication protocol for distributed system coordination
+
+### 7. **Error Handling and Resource Management**
+- **Location**: Throughout the codebase
+- **Implementation**:
+  - Try-except blocks for graceful error handling
+  - Automatic resource cleanup using context managers and finally blocks
+  - Connection retry logic and timeout handling
+- **OS Concept**: Robust error recovery and resource lifecycle management
 
 ## Development
 
