@@ -10,6 +10,11 @@ class MessageType(Enum):
     PING = "ping"
     PONG = "pong"
     ERROR = "error"
+    FILE_MANIFEST = "file_manifest"
+    FILE_CHUNK_REQUEST = "file_chunk_request"
+    FILE_CHUNK = "file_chunk"
+    FILE_COMPLETE = "file_complete"
+    FILE_AVAILABILITY = "file_availability"
 
 class MessageProtocol:
     VERSION = "1.0"
@@ -73,5 +78,53 @@ class MessageProtocol:
             sender_id,
             recipient_id,
             content={"text": text}
+        )
+        return MessageProtocol.encode_message(message)
+
+    @staticmethod
+    def create_file_manifest(sender_id: str, manifest: Dict[str, Any]) -> bytes:
+        message = MessageProtocol.create_message(
+            MessageType.FILE_MANIFEST,
+            sender_id,
+            content=manifest
+        )
+        return MessageProtocol.encode_message(message)
+
+    @staticmethod
+    def create_file_availability(sender_id: str, availability: Dict[str, Any]) -> bytes:
+        message = MessageProtocol.create_message(
+            MessageType.FILE_AVAILABILITY,
+            sender_id,
+            content=availability
+        )
+        return MessageProtocol.encode_message(message)
+
+    @staticmethod
+    def create_chunk_request(sender_id: str, recipient_id: str, request: Dict[str, Any]) -> bytes:
+        message = MessageProtocol.create_message(
+            MessageType.FILE_CHUNK_REQUEST,
+            sender_id,
+            recipient_id,
+            content=request
+        )
+        return MessageProtocol.encode_message(message)
+
+    @staticmethod
+    def create_chunk_response(sender_id: str, recipient_id: str, response: Dict[str, Any]) -> bytes:
+        message = MessageProtocol.create_message(
+            MessageType.FILE_CHUNK,
+            sender_id,
+            recipient_id,
+            content=response
+        )
+        return MessageProtocol.encode_message(message)
+
+    @staticmethod
+    def create_file_complete(sender_id: str, recipient_id: str, payload: Dict[str, Any]) -> bytes:
+        message = MessageProtocol.create_message(
+            MessageType.FILE_COMPLETE,
+            sender_id,
+            recipient_id,
+            content=payload
         )
         return MessageProtocol.encode_message(message)

@@ -1,4 +1,11 @@
-import { MessageLogEntry, Peer, StatusSummary } from "./types";
+import {
+  FileListing,
+  FileManifest,
+  FileTransfer,
+  MessageLogEntry,
+  Peer,
+  StatusSummary
+} from "./types";
 
 const API_BASE =
   import.meta.env.VITE_API_BASE_URL?.replace(/\/$/, "") || "http://localhost:8000";
@@ -44,5 +51,38 @@ export async function sendMessage(text: string, recipientId?: string): Promise<v
     body: JSON.stringify({ text, recipient_id: recipientId })
   });
   await handleResponse(response);
+}
+
+export async function uploadSharedFile(file: File): Promise<FileManifest> {
+  const data = new FormData();
+  data.append("file", file);
+
+  const response = await fetch(`${API_BASE}/api/files/upload`, {
+    method: "POST",
+    body: data
+  });
+  const payload = await handleResponse<{ file: FileManifest }>(response);
+  return payload.file;
+}
+
+export async function fetchFiles(): Promise<FileListing> {
+  const response = await fetch(`${API_BASE}/api/files`);
+  return handleResponse<FileListing>(response);
+}
+
+export async function startDownload(fileId: string): Promise<FileTransfer> {
+  const response = await fetch(`${API_BASE}/api/files/download`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ file_id: fileId })
+  });
+  const payload = await handleResponse<{ transfer: FileTransfer }>(response);
+  return payload.transfer;
+}
+
+export async function fetchTransfers(): Promise<FileTransfer[]> {
+  const response = await fetch(`${API_BASE}/api/files/transfers`);
+  const payload = await handleResponse<{ transfers: FileTransfer[] }>(response);
+  return payload.transfers;
 }
 

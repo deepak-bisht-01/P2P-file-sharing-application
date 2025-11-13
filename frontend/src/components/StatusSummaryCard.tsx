@@ -42,6 +42,18 @@ export function StatusSummaryCard({ status, isLoading, error }: Props) {
             <dt>Queue Size</dt>
             <dd>{status.queue_size}</dd>
           </dl>
+          <dl>
+            <dt>Local Files</dt>
+            <dd>{status.files_shared_local}</dd>
+          </dl>
+          <dl>
+            <dt>Remote Files</dt>
+            <dd>{status.files_known_remote}</dd>
+          </dl>
+          <dl>
+            <dt>Active Transfers</dt>
+            <dd>{status.transfers_active}</dd>
+          </dl>
         </div>
       )}
     </section>

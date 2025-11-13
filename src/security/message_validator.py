@@ -32,7 +32,19 @@ class MessageValidator:
             return False, "Invalid timestamp"
         
         # Check message type
-        valid_types = ["handshake", "text", "ack", "ping", "pong", "error"]
+        valid_types = [
+            "handshake",
+            "text",
+            "ack",
+            "ping",
+            "pong",
+            "error",
+            "file_manifest",
+            "file_chunk_request",
+            "file_chunk",
+            "file_complete",
+            "file_availability",
+        ]
         if message["type"] not in valid_types:
             return False, f"Invalid message type: {message['type']}"
         
@@ -45,6 +57,39 @@ class MessageValidator:
             text = message["content"]["text"]
             if len(text) > 10000:  # 10K character limit
                 return False, "Text message too long"
+        elif message["type"] == "file_manifest":
+            content = message.get("content") or {}
+            required = {"file_id", "file_name", "file_size", "chunk_size", "chunk_count", "checksum"}
+            missing = required - content.keys()
+            if missing:
+                return False, f"File manifest missing fields: {', '.join(sorted(missing))}"
+        elif message["type"] == "file_chunk_request":
+            content = message.get("content") or {}
+            if "file_id" not in content or "chunk_index" not in content:
+                return False, "File chunk request missing file_id or chunk_index"
+            if not isinstance(content.get("chunk_index"), int) or content["chunk_index"] < 0:
+                return False, "Invalid chunk_index in file chunk request"
+        elif message["type"] == "file_chunk":
+            content = message.get("content") or {}
+            required = {"file_id", "chunk_index", "data"}
+            missing = required - content.keys()
+            if missing:
+                return False, f"File chunk missing fields: {', '.join(sorted(missing))}"
+            encoded = content.get("data", "")
+            if not isinstance(encoded, str):
+                return False, "File chunk data must be base64 string"
+            if len(encoded) > self.max_message_size * 2:
+                return False, "File chunk data too large"
+        elif message["type"] == "file_complete":
+            content = message.get("content") or {}
+            if "file_id" not in content:
+                return False, "File complete missing file_id"
+        elif message["type"] == "file_availability":
+            content = message.get("content") or {}
+            if "file_id" not in content or "peers" not in content:
+                return False, "File availability missing required fields"
+            if not isinstance(content.get("peers"), list):
+                return False, "File availability peers must be list"
         
         # Add to seen messages
         self.seen_messages.add(msg_id)

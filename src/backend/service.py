@@ -1,5 +1,6 @@
 import threading
 from collections import deque
+from pathlib import Path
 from typing import Deque, Dict, List, Optional
 from datetime import datetime
 import logging
@@ -15,6 +16,7 @@ from src.backend.message_queue import MessageQueue
 from src.backend.models import Peer, Message
 from src.security.peer_identity import PeerIdentity
 from src.security.message_validator import MessageValidator
+from src.backend.file_transfer import FileTransferManager
 
 logger = logging.getLogger("P2PService")
 
@@ -45,6 +47,7 @@ class P2PService:
         )
         self.peer_node = PeerNode(port=port, peer_id=self.identity.peer_id)
         self.peer_node.connection_manager = self.connection_manager
+        self.file_manager = FileTransferManager(self.identity.peer_id, self.connection_manager)
 
         self._start_components()
     
@@ -119,6 +122,16 @@ class P2PService:
                 self._handle_text_message(message_dict)
             elif msg_type == MessageType.PING.value:
                 self._handle_ping(message_dict)
+            elif msg_type == MessageType.FILE_MANIFEST.value:
+                self._handle_file_manifest(message_dict)
+            elif msg_type == MessageType.FILE_CHUNK_REQUEST.value:
+                self._handle_file_chunk_request(message_dict)
+            elif msg_type == MessageType.FILE_CHUNK.value:
+                self._handle_file_chunk(message_dict)
+            elif msg_type == MessageType.FILE_AVAILABILITY.value:
+                self._handle_file_availability(message_dict)
+            elif msg_type == MessageType.FILE_COMPLETE.value:
+                self._handle_file_complete(message_dict)
 
             self._record_message({
                 "direction": "incoming",
@@ -140,6 +153,7 @@ class P2PService:
         self.peer_registry.register_peer(peer)
         temp_id = f"{peer.address}:{peer.port}"
         self.connection_manager.associate_temp_id_with_peer_id(temp_id, sender_id)
+        self._send_all_manifests(sender_id)
 
     def _handle_text_message(self, message: Dict):
         # For now, we only record the message. Additional logic could go here.
@@ -188,13 +202,21 @@ class P2PService:
     # ------------------------------------------------------------------
     def get_status(self) -> Dict:
         stats = self.message_queue.get_stats()
+        file_listing = self.file_manager.list_shared_files()
+        transfers = self.file_manager.get_transfers()
+        active_transfers = sum(
+            1 for transfer in transfers if transfer["status"] in {"pending", "running"}
+        )
         return {
             "peer_id": self.identity.peer_id,
             "port": self.port,
             "messages_processed": stats["messages_processed"],
             "messages_failed": stats["messages_failed"],
             "queue_size": stats["queue_size"],
-            "active_connections": self.connection_manager.get_active_connections()
+            "active_connections": self.connection_manager.get_active_connections(),
+            "files_shared_local": len(file_listing["local"]),
+            "files_known_remote": len(file_listing["remote"]),
+            "transfers_active": active_transfers,
         }
 
     def list_peers(self) -> List[Dict]:
@@ -260,6 +282,63 @@ class P2PService:
     def get_messages(self, limit: int = 100) -> List[Dict]:
         with self.lock:
             return list(list(self.messages)[0:limit])
+
+    # ------------------------------------------------------------------
+    # File transfer helpers
+    # ------------------------------------------------------------------
+    def _send_all_manifests(self, recipient_id: str):
+        manifests = self.file_manager.list_local_files()
+        for manifest in manifests:
+            msg = MessageProtocol.create_file_manifest(self.identity.peer_id, manifest)
+            self.connection_manager.send_message(recipient_id, msg)
+
+    def _handle_file_manifest(self, message: Dict):
+        sender_id = message["sender_id"]
+        manifest = message.get("content", {})
+        self.file_manager.register_remote_manifest(sender_id, manifest)
+
+    def _handle_file_chunk_request(self, message: Dict):
+        sender_id = message["sender_id"]
+        request = message.get("content", {})
+        self.file_manager.handle_chunk_request(sender_id, request)
+
+    def _handle_file_chunk(self, message: Dict):
+        sender_id = message["sender_id"]
+        response = message.get("content", {})
+        self.file_manager.handle_chunk_response(sender_id, response)
+
+    def _handle_file_availability(self, message: Dict):
+        sender_id = message["sender_id"]
+        payload = message.get("content", {})
+        self.file_manager.register_remote_availability(sender_id, payload)
+
+    def _handle_file_complete(self, message: Dict):
+        sender_id = message["sender_id"]
+        payload = message.get("content", {})
+        file_id = payload.get("file_id")
+        if file_id:
+            self.file_manager.handle_download_complete(file_id, sender_id)
+
+    # ------------------------------------------------------------------
+    # Public file transfer API
+    # ------------------------------------------------------------------
+    def share_file(self, upload_path: str) -> Dict:
+        shared = self.file_manager.share_local_file(Path(upload_path))
+        self.file_manager.broadcast_manifest(shared.file_id)
+        return shared.to_manifest(self.identity.peer_id)
+
+    def list_shared_files(self) -> Dict[str, List[Dict]]:
+        return {
+            "local": self.file_manager.list_local_files(),
+            "remote": self.file_manager.list_remote_files(),
+        }
+
+    def start_file_download(self, file_id: str) -> Dict:
+        status = self.file_manager.start_download(file_id)
+        return status.to_dict()
+
+    def list_transfers(self) -> List[Dict]:
+        return self.file_manager.get_transfers()
 
 
 # Singleton service instance used by the API layer
