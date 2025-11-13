@@ -179,6 +179,7 @@ class FileTransferManager:
                     target.write(block)
 
         file_id = checksum.hexdigest()
+        checksum_str = checksum.hexdigest()
 
         if shared_path.resolve() != file_path.resolve():
             # ensure original file retained; already copied
@@ -190,7 +191,7 @@ class FileTransferManager:
             file_size=file_size,
             chunk_size=chunk_size,
             chunk_count=chunk_count,
-            checksum=checksum,
+            checksum=checksum_str,
             path=shared_path,
         )
 
