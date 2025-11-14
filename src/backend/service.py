@@ -7,6 +7,7 @@ from datetime import datetime
 import logging
 import logging.config
 import os
+import time
 import yaml
 
 from src.core.peer_node import PeerNode
@@ -161,6 +162,11 @@ class P2PService:
         # with real peer ids when the message is received; no need to
         # attempt mapping here using the advertised address/port.
         self._send_all_manifests(sender_id)
+        if sender_id != self.identity.peer_id and not peer_info.get("handshake_response"):
+            try:
+                self._send_handshake(sender_id, is_response=True)
+            except Exception as exc:
+                logger.error("Failed to send handshake response to %s: %s", sender_id[:8], exc)
 
     def _handle_text_message(self, message: Dict):
         # For now, we only record the message. Additional logic could go here.
@@ -288,16 +294,8 @@ class P2PService:
 
         temp_peer_id = f"{host}:{port}"
 
-        handshake = MessageProtocol.create_handshake(
-            self.identity.peer_id,
-            {
-                "address": local_addr,
-                "port": self.port,
-                "public_key": self.identity.get_public_key_string()
-            }
-        )
         # send handshake using the temp id assigned for the connection
-        self.connection_manager.send_message(temp_peer_id, handshake)
+        self._send_handshake(temp_peer_id, advertised_address=local_addr)
 
         peer = Peer(
             peer_id=temp_peer_id,
@@ -406,11 +404,54 @@ class P2PService:
         }
 
     def start_file_download(self, file_id: str) -> Dict:
+        remote_entry = self.file_manager.get_remote_file(file_id)
+        if not remote_entry:
+            raise ValueError("Unknown file requested")
+
+        self._ensure_peers_connected_for_file(file_id, remote_entry.peers)
+
         status = self.file_manager.start_download(file_id)
         return status.to_dict()
 
     def list_transfers(self) -> List[Dict]:
         return self.file_manager.get_transfers()
+
+
+    def _send_handshake(self, recipient_id: str, *, advertised_address: Optional[str] = None, is_response: bool = False):
+        payload = {
+            "address": advertised_address or self._get_local_ip(),
+            "port": self.port,
+            "public_key": self.identity.get_public_key_string(),
+            "handshake_response": is_response,
+        }
+        message = MessageProtocol.create_handshake(self.identity.peer_id, payload)
+        self.connection_manager.send_message(recipient_id, message)
+
+    def _ensure_peers_connected_for_file(self, file_id: str, peer_ids):
+        target_peers = {peer for peer in peer_ids if peer and peer != self.identity.peer_id}
+        if not target_peers:
+            return
+
+        active = set(self.connection_manager.get_active_connections())
+        missing = [peer for peer in target_peers if peer not in active]
+
+        for peer_id in missing:
+            peer = self.peer_registry.get_peer(peer_id)
+            if not peer:
+                logger.warning("No registry entry for peer %s when preparing download for %s", peer_id[:8], file_id[:8])
+                continue
+            try:
+                self.connect_to_peer(peer.address, peer.port)
+            except Exception as exc:
+                logger.warning("Failed to connect to peer %s for file %s: %s", peer_id[:8], file_id[:8], exc)
+
+        if missing:
+            deadline = time.time() + 3.0
+            while time.time() < deadline:
+                active = set(self.connection_manager.get_active_connections())
+                if all(peer in active for peer in target_peers):
+                    return
+                time.sleep(0.1)
 
 
 # Singleton service instance used by the API layer
