@@ -541,17 +541,69 @@ class FileTransferManager:
                         return
 
     def _finalise_download(self, session: DownloadSession):
+        import logging
+        logger = logging.getLogger('FileTransferManager')
+        
         if session.status.status == "completed":
             return
-        session.mark_completed()
-        # verify checksum if available
-        if session.manifest_checksum:
-            with open(session.status.destination, "rb") as handle:
-                computed = hashlib.sha256(handle.read()).hexdigest()
-            if computed != session.manifest_checksum:
+        
+        # Close file handle first to ensure all writes are flushed
+        session.close_file()
+        
+        # Verify we received the correct amount of data
+        if session.status.bytes_received != session.status.file_size:
+            logger.warning(f"Bytes received ({session.status.bytes_received}) != file size ({session.status.file_size})")
+            with session.session_lock:
                 session.status.status = "failed"
-                session.status.error = "Checksum mismatch after download"
+                session.status.error = f"Incomplete download: received {session.status.bytes_received} bytes, expected {session.status.file_size} bytes"
                 session.status.completed_at = time.time()
+            return
+        
+        # Truncate file to exact size to remove any padding from pre-allocation
+        try:
+            with open(session.status.destination, "r+b") as handle:
+                handle.truncate(session.status.file_size)
+            logger.info(f"Truncated file {session.status.destination} to {session.status.file_size} bytes")
+        except Exception as e:
+            logger.error(f"Failed to truncate file: {e}")
+        
+        # Verify checksum if available
+        if session.manifest_checksum:
+            try:
+                with open(session.status.destination, "rb") as handle:
+                    # Only read the expected file size to avoid padding issues
+                    file_data = handle.read(session.status.file_size)
+                    if len(file_data) != session.status.file_size:
+                        logger.warning(f"File size mismatch: expected {session.status.file_size}, got {len(file_data)}")
+                        with session.session_lock:
+                            session.status.status = "failed"
+                            session.status.error = f"File size mismatch: expected {session.status.file_size} bytes, got {len(file_data)} bytes"
+                            session.status.completed_at = time.time()
+                        return
+                    
+                    computed = hashlib.sha256(file_data).hexdigest()
+                    logger.info(f"Computed checksum: {computed[:16]}..., Expected: {session.manifest_checksum[:16]}...")
+                    
+                    if computed != session.manifest_checksum:
+                        logger.error(f"Checksum mismatch! Computed: {computed}, Expected: {session.manifest_checksum}")
+                        with session.session_lock:
+                            session.status.status = "failed"
+                            session.status.error = "Checksum mismatch after download"
+                            session.status.completed_at = time.time()
+                        return
+                    else:
+                        logger.info(f"Checksum verified successfully for {session.status.file_id[:8]}")
+            except Exception as e:
+                logger.error(f"Error during checksum verification: {e}", exc_info=True)
+                with session.session_lock:
+                    session.status.status = "failed"
+                    session.status.error = f"Checksum verification error: {str(e)}"
+                    session.status.completed_at = time.time()
+                return
+        
+        # Mark as completed only if checksum passed (or no checksum required)
+        # mark_completed() will close the file again, but that's safe (idempotent)
+        session.mark_completed()
         if session.status.status == "completed":
             self.broadcast_availability(session.status.file_id)
 
