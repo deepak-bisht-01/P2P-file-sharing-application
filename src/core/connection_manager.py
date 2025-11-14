@@ -113,17 +113,29 @@ class ConnectionManager:
                 del self.connections[peer_id]
             
             # Also check by address to avoid duplicates
+            # But only close if it's actually the same socket (reconnection scenario)
             if address in self.address_to_peer:
                 old_peer_id = self.address_to_peer[address]
                 if old_peer_id in self.connections:
                     existing_conn = self.connections[old_peer_id]
-                    if existing_conn.is_active:
-                        self.logger.warning(f"Connection to {address} already exists as {old_peer_id}, closing old socket")
+                    # Only close if it's the same socket or if the old connection is dead
+                    if existing_conn.socket == sock:
+                        # Same socket, just update
+                        self.logger.info(f"Updating existing connection for {address}")
+                        return
+                    elif not existing_conn.is_active:
+                        # Old connection is dead, remove it
+                        del self.connections[old_peer_id]
+                    else:
+                        # Different socket from same address - this shouldn't happen in normal P2P
+                        # but if it does, keep the new one (might be a reconnection)
+                        self.logger.warning(f"New connection from {address} while old connection exists, closing old socket")
+                        existing_conn.is_active = False
                         try:
                             existing_conn.socket.close()
                         except:
                             pass
-                    del self.connections[old_peer_id]
+                        del self.connections[old_peer_id]
         
             # Set socket options for better reliability
             try:
@@ -195,7 +207,9 @@ class ConnectionManager:
                             sender_id = msg_dict.get('sender_id', conn.peer_id)
                             
                             # Update connection peer_id if needed (handshake)
-                            if sender_id != conn.peer_id and sender_id not in self.connections:
+                            if sender_id != conn.peer_id:
+                                # Always try to associate, even if sender_id already exists
+                                # The associate method will handle duplicates properly
                                 self.logger.info(f"Associating temp id {conn.peer_id} with sender_id {sender_id} from message")
                                 self.associate_temp_id_with_peer_id(conn.peer_id, sender_id)
                             
@@ -289,12 +303,38 @@ class ConnectionManager:
     def get_active_connections(self) -> List[str]:
         """Get list of active peer IDs"""
         with self.lock:
-            return list(self.connections.keys())
+            # Only return connections that are actually active
+            return [peer_id for peer_id, conn in self.connections.items() if conn.is_active]
     def associate_temp_id_with_peer_id(self, temp_id: str, real_id: str) -> bool:
         """Replace a temporary peer_id (like 'host:port') with the real peer_id after handshake"""
         with self.lock:
             if temp_id not in self.connections:
                 return False
+
+            # If real_id already exists, we need to handle the duplicate connection
+            if real_id in self.connections:
+                existing_conn = self.connections[real_id]
+                new_conn = self.connections[temp_id]
+                
+                # Check if they're actually the same connection (same socket)
+                if existing_conn.socket == new_conn.socket:
+                    # Same connection, just update the temp_id mapping
+                    del self.connections[temp_id]
+                    # Update address→peer map
+                    for addr, pid in list(self.address_to_peer.items()):
+                        if pid == temp_id:
+                            self.address_to_peer[addr] = real_id
+                    self.logger.info(f"Connection {temp_id} already associated with {real_id}")
+                    return True
+                
+                # Different connections to the same peer - keep the newer one (the one we're updating)
+                self.logger.warning(f"Duplicate connection to {real_id}: closing old connection")
+                existing_conn.is_active = False
+                try:
+                    existing_conn.socket.close()
+                except:
+                    pass
+                del self.connections[real_id]
 
             # Move connection under new key
             conn = self.connections.pop(temp_id)
