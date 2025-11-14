@@ -316,11 +316,19 @@ class P2PService:
     def _handle_file_chunk_request(self, message: Dict):
         sender_id = message["sender_id"]
         request = message.get("content", {})
+        # Ensure sender_id is in connections (might need to update if using temp ID)
+        active_connections = self.connection_manager.get_active_connections()
+        if sender_id not in active_connections:
+            logger.warning(f"Chunk request from {sender_id[:8]} not in active connections: {active_connections}")
         self.file_manager.handle_chunk_request(sender_id, request)
 
     def _handle_file_chunk(self, message: Dict):
         sender_id = message["sender_id"]
         response = message.get("content", {})
+        # Ensure sender_id is in connections
+        active_connections = self.connection_manager.get_active_connections()
+        if sender_id not in active_connections:
+            logger.warning(f"Chunk response from {sender_id[:8]} not in active connections: {active_connections}")
         self.file_manager.handle_chunk_response(sender_id, response)
 
     def _handle_file_availability(self, message: Dict):

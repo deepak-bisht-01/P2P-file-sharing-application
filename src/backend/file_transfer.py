@@ -339,6 +339,9 @@ class FileTransferManager:
     # Downloads
     # ------------------------------------------------------------------
     def start_download(self, file_id: str, destination: Optional[Path] = None) -> DownloadStatus:
+        import logging
+        logger = logging.getLogger('FileTransferManager')
+        
         with self.lock:
             if file_id in self.downloads:
                 return self.downloads[file_id].status
@@ -347,9 +350,21 @@ class FileTransferManager:
             if not remote or "chunk_count" not in remote.manifest:
                 raise ValueError("Missing manifest for requested file")
 
-            peers = {peer for peer in remote.peers if peer != self.peer_id}
+            # Get all peers that have this file
+            all_peers = {peer for peer in remote.peers if peer != self.peer_id}
+            
+            # Filter to only peers with active connections
+            active_connections = set(self.connection_manager.get_active_connections())
+            peers = {peer for peer in all_peers if peer in active_connections}
+            
+            logger.info(f"File {file_id[:8]}: all_peers={[p[:8] for p in all_peers]}, active_connections={[c[:8] for c in active_connections]}, filtered_peers={[p[:8] for p in peers]}")
+            
             if not peers:
-                raise ValueError("No peers available for this file")
+                available_peers = list(all_peers)
+                available_conns = list(active_connections)
+                error_msg = f"No peers with active connections available. File peers: {available_peers}, Active connections: {available_conns}"
+                logger.error(error_msg)
+                raise ValueError(error_msg)
 
             manifest = remote.manifest
 
@@ -511,7 +526,19 @@ class FileTransferManager:
             self.broadcast_availability(session.status.file_id)
 
     def _send_request(self, peer_id: str, message: bytes) -> bool:
-        return self.connection_manager.send_message(peer_id, message)
+        import logging
+        logger = logging.getLogger('FileTransferManager')
+        
+        # Verify connection exists before sending
+        active_connections = self.connection_manager.get_active_connections()
+        if peer_id not in active_connections:
+            logger.warning(f"Peer {peer_id[:8]} not in active connections: {[c[:8] for c in active_connections]}")
+            return False
+        
+        result = self.connection_manager.send_message(peer_id, message)
+        if not result:
+            logger.warning(f"Failed to send message to peer {peer_id[:8]}")
+        return result
 
     def handle_download_complete(self, file_id: str, peer_id: str):
         status = self.downloads.get(file_id)

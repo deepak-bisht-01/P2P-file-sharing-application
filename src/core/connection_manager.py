@@ -63,7 +63,23 @@ class ConnectionManager:
                 while b'\n' in buffer:
                     line, buffer = buffer.split(b'\n', 1)
                     if self.message_handler:
-                        self.message_handler(conn.peer_id, line.decode('utf-8'))
+                        # Try to extract sender_id from message to use correct peer_id
+                        # Fall back to conn.peer_id if message parsing fails
+                        try:
+                            import json
+                            msg_dict = json.loads(line.decode('utf-8'))
+                            sender_id = msg_dict.get('sender_id', conn.peer_id)
+                            # Update conn.peer_id if we got a different sender_id (handshake case)
+                            if sender_id != conn.peer_id and sender_id in self.connections:
+                                # Already associated, use the sender_id
+                                pass
+                            elif sender_id != conn.peer_id:
+                                # New association needed
+                                self.associate_temp_id_with_peer_id(conn.peer_id, sender_id)
+                            self.message_handler(sender_id, line.decode('utf-8'))
+                        except:
+                            # Fallback to using conn.peer_id if message parsing fails
+                            self.message_handler(conn.peer_id, line.decode('utf-8'))
                         
             except Exception as e:
                 self.logger.error(f"Error handling connection {conn.peer_id}: {e}")
