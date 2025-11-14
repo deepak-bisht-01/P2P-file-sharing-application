@@ -45,8 +45,12 @@ class P2PService:
             message_handler=self._handle_incoming_message,
             peer_registry=self.peer_registry
         )
-        self.peer_node = PeerNode(port=port, peer_id=self.identity.peer_id)
-        self.peer_node.connection_manager = self.connection_manager
+        self.peer_node = PeerNode(
+            port=port, 
+            peer_id=self.identity.peer_id,
+            connection_manager=self.connection_manager,
+            peer_registry=self.peer_registry
+        )
         self.file_manager = FileTransferManager(self.identity.peer_id, self.connection_manager)
 
         self._start_components()

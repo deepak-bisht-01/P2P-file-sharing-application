@@ -1,0 +1,10 @@
+2025-11-14 11:39:15,612 - PeerRegistry - INFO - Peer registry started
+2025-11-14 11:39:15,619 - MessageQueue - INFO - Message queue started
+2025-11-14 11:39:15,619 - MessageQueue - INFO - Message queue started
+2025-11-14 11:39:15,622 - PeerNode-5000 - INFO - Peer node started on 0.0.0.0:5000
+2025-11-14 11:39:15,624 - PeerRegistry - INFO - Peer 947d633e-7a44-4707-94cf-f480c92c46b2-0e1b3eda716d7bbf registered
+Starting P2P Messaging API server on 0.0.0.0:8000
+P2P peer will listen on port 5000
+2025-11-14 11:39:30,391 - P2PService - INFO - Shutting down P2P service
+2025-11-14 11:39:30,759 - MessageQueue - INFO - Message queue stopped
+2025-11-14 11:39:30,759 - MessageQueue - INFO - Message queue stopped

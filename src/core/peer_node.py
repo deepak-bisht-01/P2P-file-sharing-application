@@ -9,7 +9,8 @@ from src.core.connection_manager import ConnectionManager
 from src.backend.peer_registry import PeerRegistry
 
 class PeerNode:
-    def __init__(self, host: str = '0.0.0.0', port: int = 5000, peer_id: str = None):
+    def __init__(self, host: str = '0.0.0.0', port: int = 5000, peer_id: str = None, 
+                 connection_manager: ConnectionManager = None, peer_registry: PeerRegistry = None):
         self.host = host
         self.port = port
         self.peer_id = peer_id
@@ -17,15 +18,18 @@ class PeerNode:
         self.is_running = False
         self.logger = logging.getLogger(f'PeerNode-{port}')
 
-        # ✅ create registry
-        self.peer_registry = PeerRegistry()
-        self.peer_registry.start()
-
-        # ✅ create connection manager with registry
-        self.connection_manager = ConnectionManager(
-            message_handler=self._handle_message,
-            peer_registry=self.peer_registry
-        )
+        # Use provided connection_manager and registry, or create defaults
+        if connection_manager:
+            self.connection_manager = connection_manager
+        else:
+            self.peer_registry = peer_registry or PeerRegistry()
+            if not peer_registry:
+                self.peer_registry.start()
+            
+            self.connection_manager = ConnectionManager(
+                message_handler=self._handle_message,
+                peer_registry=self.peer_registry
+            )
     
     def start(self):
         """Start the peer node server"""

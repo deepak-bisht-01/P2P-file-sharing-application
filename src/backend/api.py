@@ -7,7 +7,23 @@ import logging
 from pathlib import Path
 from src.backend.file_transfer import SHARED_DIR, DOWNLOAD_DIR
 
-from src.backend.service import p2p_service
+logger = logging.getLogger(__name__)
+
+# Lazy-initialize p2p_service to avoid issues during import
+_p2p_service_instance = None
+
+def get_p2p_service():
+    """Lazy-initialize the P2P service"""
+    global _p2p_service_instance
+    if _p2p_service_instance is None:
+        try:
+            from src.backend.service import P2PService
+            _p2p_service_instance = P2PService()
+            logger.info("P2P Service initialized")
+        except Exception as e:
+            logger.error(f"Failed to initialize P2P Service: {e}", exc_info=True)
+            raise
+    return _p2p_service_instance
 
 
 class ConnectRequest(BaseModel):
@@ -38,7 +54,7 @@ app.add_middleware(
 @app.get("/api/status")
 def get_status():
     try:
-        return p2p_service.get_status()
+        return get_p2p_service().get_status()
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Error getting status: {e}", exc_info=True)
@@ -47,17 +63,17 @@ def get_status():
 
 @app.get("/api/peers")
 def get_peers():
-    return {"peers": p2p_service.list_peers()}
+    return {"peers": get_p2p_service().list_peers()}
 
 
 @app.get("/api/peers/connected")
 def get_connected_peers():
-    return {"peers": p2p_service.list_connected_peers()}
+    return {"peers": get_p2p_service().list_connected_peers()}
 
 
 @app.post("/api/peers/connect")
 def connect_peer(request: ConnectRequest):
-    success = p2p_service.connect_to_peer(request.host, request.port)
+    success = get_p2p_service().connect_to_peer(request.host, request.port)
     if not success:
         raise HTTPException(status_code=400, detail="Failed to connect to peer")
     return {"status": "connected"}
@@ -66,9 +82,9 @@ def connect_peer(request: ConnectRequest):
 @app.post("/api/messages")
 def create_message(request: MessageRequest):
     if request.recipient_id:
-        success = p2p_service.send_text_message(request.recipient_id, request.text)
+        success = get_p2p_service().send_text_message(request.recipient_id, request.text)
     else:
-        success = p2p_service.broadcast_text_message(request.text)
+        success = get_p2p_service().broadcast_text_message(request.text)
 
     if not success:
         raise HTTPException(status_code=400, detail="Failed to queue message")
@@ -78,7 +94,7 @@ def create_message(request: MessageRequest):
 @app.get("/api/messages")
 def list_messages(limit: int = 100):
     limit = max(1, min(limit, 500))
-    return {"messages": p2p_service.get_messages(limit=limit)}
+    return {"messages": get_p2p_service().get_messages(limit=limit)}
 
 
 @app.post("/api/files/upload")
@@ -99,7 +115,7 @@ async def upload_file(file: UploadFile = File(...)):
                     break
                 buffer.write(chunk)
 
-        manifest = p2p_service.share_file(str(destination))
+            manifest = get_p2p_service().share_file(str(destination))
         return {"file": manifest}
     except HTTPException:
         raise
@@ -111,7 +127,7 @@ async def upload_file(file: UploadFile = File(...)):
 @app.get("/api/files")
 def list_files():
     try:
-        return p2p_service.list_shared_files()
+        return get_p2p_service().list_shared_files()
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Error listing files: {e}", exc_info=True)
@@ -122,7 +138,7 @@ def list_files():
 def download_file(request: DownloadRequest):
     logger = logging.getLogger(__name__)
     try:
-        status = p2p_service.start_file_download(request.file_id)
+        status = get_p2p_service().start_file_download(request.file_id)
         return {"transfer": status}
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
@@ -134,7 +150,7 @@ def download_file(request: DownloadRequest):
 @app.get("/api/files/transfers")
 def list_transfers():
     try:
-        return {"transfers": p2p_service.list_transfers()}
+        return {"transfers": get_p2p_service().list_transfers()}
     except Exception as e:
         logger = logging.getLogger(__name__)
         logger.error(f"Error listing transfers: {e}", exc_info=True)
@@ -148,7 +164,7 @@ def preview_file(file_id: str):
     logger = logging.getLogger(__name__)
     try:
         # Check in downloads first (completed downloads)
-        transfers = p2p_service.list_transfers()
+        transfers = get_p2p_service().list_transfers()
         for transfer in transfers:
             if transfer.get("file_id") == file_id and transfer.get("status") == "completed":
                 file_path = Path(transfer.get("destination", ""))
@@ -163,7 +179,7 @@ def preview_file(file_id: str):
                     )
         
         # Check in shared files
-        files = p2p_service.list_shared_files()
+        files = get_p2p_service().list_shared_files()
         for file_info in files.get("local", []):
             if file_info.get("file_id") == file_id:
                 file_name = file_info.get("file_name")
@@ -191,7 +207,7 @@ def preview_file(file_id: str):
 def list_downloaded_files():
     """List all completed downloaded files"""
     try:
-        transfers = p2p_service.list_transfers()
+        transfers = get_p2p_service().list_transfers()
         downloaded = [
             {
                 "file_id": t.get("file_id"),
@@ -212,5 +228,5 @@ def list_downloaded_files():
 
 @app.on_event("shutdown")
 def shutdown_event():
-    p2p_service.shutdown()
+    get_p2p_service().shutdown()
 
