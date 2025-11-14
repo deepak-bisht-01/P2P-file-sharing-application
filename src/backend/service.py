@@ -155,8 +155,9 @@ class P2PService:
             public_key=peer_info.get("public_key")
         )
         self.peer_registry.register_peer(peer)
-        temp_id = f"{peer.address}:{peer.port}"
-        self.connection_manager.associate_temp_id_with_peer_id(temp_id, sender_id)
+        # ConnectionManager already associates temporary connection ids
+        # with real peer ids when the message is received; no need to
+        # attempt mapping here using the advertised address/port.
         self._send_all_manifests(sender_id)
 
     def _handle_text_message(self, message: Dict):
@@ -251,18 +252,24 @@ class P2PService:
         sock = self.peer_node.connect_to_peer(host, port)
         if not sock:
             return False
+        # The PeerNode already registers the connection with ConnectionManager.
+        # Use the socket local address as the advertised address in the handshake
+        try:
+            local_addr = sock.getsockname()[0]
+        except Exception:
+            local_addr = "localhost"
 
         temp_peer_id = f"{host}:{port}"
-        self.connection_manager.add_connection(sock, (host, port), temp_peer_id)
 
         handshake = MessageProtocol.create_handshake(
             self.identity.peer_id,
             {
-                "address": "localhost",
+                "address": local_addr,
                 "port": self.port,
                 "public_key": self.identity.get_public_key_string()
             }
         )
+        # send handshake using the temp id assigned for the connection
         self.connection_manager.send_message(temp_peer_id, handshake)
 
         peer = Peer(
