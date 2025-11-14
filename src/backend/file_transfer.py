@@ -108,11 +108,19 @@ class DownloadSession:
         self.cancel_event = threading.Event()
 
     def open_file(self):
+        import logging
+        logger = logging.getLogger('FileTransferManager')
+        
         self.status.destination.parent.mkdir(parents=True, exist_ok=True)
         # Pre-allocate file size to support random writes
-        with open(self.status.destination, "wb") as output:
-            output.truncate(self.status.file_size)
-        self.file_handle = open(self.status.destination, "r+b")
+        try:
+            with open(self.status.destination, "wb") as output:
+                output.truncate(self.status.file_size)
+            self.file_handle = open(self.status.destination, "r+b")
+            logger.info(f"Opened file handle for {self.status.destination} (size: {self.status.file_size} bytes)")
+        except Exception as e:
+            logger.error(f"Failed to open file {self.status.destination}: {e}")
+            raise
 
     def close_file(self):
         if self.file_handle:
@@ -271,10 +279,20 @@ class FileTransferManager:
             return handle.read(shared.chunk_size)
 
     def handle_chunk_request(self, sender_id: str, request: Dict):
-        file_id = request["file_id"]
-        chunk_index = request["chunk_index"]
+        import logging
+        logger = logging.getLogger('FileTransferManager')
+        
+        file_id = request.get("file_id")
+        chunk_index = request.get("chunk_index")
+        
+        if not file_id or chunk_index is None:
+            logger.warning(f"Invalid chunk request from {sender_id[:8]}: missing file_id or chunk_index")
+            return
+            
+        logger.info(f"Received chunk request {chunk_index} for file {file_id[:8]} from {sender_id[:8]}")
         chunk_bytes = self.get_chunk(file_id, chunk_index)
         if chunk_bytes is None:
+            logger.error(f"Chunk {chunk_index} not found for file {file_id[:8]}")
             return
         payload = {
             "file_id": file_id,
@@ -282,7 +300,11 @@ class FileTransferManager:
             "data": base64.b64encode(chunk_bytes).decode("ascii"),
         }
         message = MessageProtocol.create_chunk_response(self.peer_id, sender_id, payload)
-        self.connection_manager.send_message(sender_id, message)
+        success = self.connection_manager.send_message(sender_id, message)
+        if success:
+            logger.info(f"Sent chunk {chunk_index} ({len(chunk_bytes)} bytes) for file {file_id[:8]} to {sender_id[:8]}")
+        else:
+            logger.error(f"Failed to send chunk {chunk_index} to {sender_id[:8]}")
 
     def handle_chunk_response(self, sender_id: str, response: Dict):
         import logging
@@ -405,9 +427,10 @@ class FileTransferManager:
             request_message = MessageProtocol.create_chunk_request(
                 self.peer_id, peer_id, request_payload
             )
+            logger.info(f"Sending chunk request {chunk_index} for file {session.status.file_id[:8]} to peer {peer_id[:8]}")
             success = self.connection_manager.send_message(peer_id, request_message)
             if not success:
-                logger.warning(f"Failed to send chunk request {chunk_index} to peer {peer_id[:8]}")
+                logger.warning(f"Failed to send chunk request {chunk_index} to peer {peer_id[:8]} - connection may be closed")
                 with session.pending_lock:
                     session.pending_events.pop(chunk_index, None)
                 session.chunk_queue.put(chunk_index)
@@ -417,6 +440,7 @@ class FileTransferManager:
                     break
                 time.sleep(0.5)
                 continue
+            logger.debug(f"Chunk request {chunk_index} sent successfully, waiting for response...")
 
             retry_count = 0  # Reset on success
             received = event.wait(timeout=10)  # Increased timeout
@@ -441,9 +465,16 @@ class FileTransferManager:
 
             with session.file_lock:
                 try:
+                    if session.file_handle is None:
+                        logger.error(f"File handle is None for file {session.status.file_id[:8]}")
+                        session.stop("File handle not open")
+                        return
                     session.file_handle.seek(chunk_index * session.status.chunk_size)
                     session.file_handle.write(data)
+                    session.file_handle.flush()  # Ensure data is written to disk
+                    logger.info(f"Wrote chunk {chunk_index} ({len(data)} bytes) for file {session.status.file_id[:8]}")
                 except OSError as exc:
+                    logger.error(f"I/O error writing chunk {chunk_index}: {exc}")
                     session.stop(f"I/O error writing chunk: {exc}")
                     return
 
@@ -451,6 +482,7 @@ class FileTransferManager:
                 session.status.bytes_received += len(data)
                 session.status.chunks_completed += 1
                 session.status.peers_used.add(peer_id)
+                logger.info(f"Progress: {session.status.chunks_completed}/{session.status.chunk_count} chunks, {session.status.bytes_received}/{session.status.file_size} bytes")
 
             if session.status.chunks_completed >= session.status.chunk_count:
                 self._finalise_download(session)
