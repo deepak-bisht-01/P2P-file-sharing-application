@@ -183,13 +183,38 @@ class P2PService:
             encoded = MessageProtocol.encode_message(wire_format)
 
             if message.recipient_id:
-                success = self.connection_manager.send_message(
-                    message.recipient_id,
-                    encoded
-                )
+                target_id = message.recipient_id
+                active = set(self.connection_manager.get_active_connections())
+                if target_id not in active:
+                    host = None
+                    port = None
+                    if ":" in target_id:
+                        try:
+                            host, port_str = target_id.rsplit(":", 1)
+                            port = int(port_str)
+                        except Exception:
+                            host = None
+                            port = None
+                    if host is None or port is None:
+                        peer = self.peer_registry.get_peer(target_id)
+                        if peer:
+                            host = peer.address
+                            port = peer.port
+                            target_id = f"{host}:{port}"
+                    if host and port:
+                        self.connect_to_peer(host, port)
+                success = self.connection_manager.send_message(target_id, encoded)
                 if not success:
-                    logger.warning("Failed to send message to %s", message.recipient_id)
+                    logger.warning("Failed to send message to %s", target_id)
             else:
+                active = self.connection_manager.get_active_connections()
+                if not active:
+                    for peer in self.peer_registry.get_online_peers():
+                        if peer.peer_id != self.identity.peer_id:
+                            try:
+                                self.connect_to_peer(peer.address, peer.port)
+                            except Exception:
+                                pass
                 self.connection_manager.broadcast_message(encoded)
 
             self._record_message({
