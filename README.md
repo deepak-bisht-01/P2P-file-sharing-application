@@ -242,7 +242,4 @@ p2p-chat --port 5000
 - **Frontend can't connect**: Ensure the API server is running and `VITE_API_BASE_URL` is set correctly
 - **Peer connection fails**: Check firewall settings and ensure peers are accessible on the specified ports
 
-## License
-
-[Your License Here]
 
