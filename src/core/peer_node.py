@@ -70,6 +70,11 @@ class PeerNode:
         """Connect to another peer"""
         try:
             peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            peer_socket.settimeout(5)
+            try:
+                peer_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            except Exception:
+                pass
             peer_socket.connect((target_host, target_port))
             self.logger.info(f"Connected to peer at {target_host}:{target_port}")
             

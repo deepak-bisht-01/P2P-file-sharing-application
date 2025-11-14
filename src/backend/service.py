@@ -1,4 +1,5 @@
 import threading
+import socket
 from collections import deque
 from pathlib import Path
 from typing import Deque, Dict, List, Optional
@@ -89,7 +90,7 @@ class P2PService:
         # Register self
         self_peer = Peer(
             peer_id=self.identity.peer_id,
-            address="localhost",
+            address=self._get_local_ip(),
             port=self.port,
             public_key=self.identity.get_public_key_string()
         )
@@ -281,6 +282,16 @@ class P2PService:
         )
         self.peer_registry.register_peer(peer)
         return True
+
+    def _get_local_ip(self) -> str:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except Exception:
+            return "localhost"
 
     def send_text_message(self, recipient_id: str, text: str) -> bool:
         import uuid

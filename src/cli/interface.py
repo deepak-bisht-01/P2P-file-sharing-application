@@ -7,6 +7,7 @@ import logging
 import logging.config
 import yaml
 import os
+import socket
 
 # Import all components
 from src.core.peer_node import PeerNode
@@ -71,9 +72,16 @@ class P2PCLI:
         self.peer_node.start()
         
         # Register self in registry
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_addr = s.getsockname()[0]
+            s.close()
+        except Exception:
+            local_addr = "localhost"
         self_peer = Peer(
             peer_id=self.identity.peer_id,
-            address="localhost",
+            address=local_addr,
             port=self.port,
             public_key=self.identity.get_public_key_string()
         )
@@ -246,10 +254,14 @@ class P2PCLI:
             self.connection_manager.add_connection(sock, (host, port), temp_peer_id)
             
             # Send handshake
+            try:
+                local_addr = sock.getsockname()[0]
+            except Exception:
+                local_addr = "localhost"
             handshake = MessageProtocol.create_handshake(
                 self.identity.peer_id,
                 {
-                    "address": "localhost",
+                    "address": local_addr,
                     "port": self.port,
                     "public_key": self.identity.get_public_key_string()
                 }
