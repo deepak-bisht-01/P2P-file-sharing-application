@@ -59,27 +59,35 @@ class ConnectionManager:
                 
                 buffer += data
                 
-                # Try to extract complete messages
-                while b'\n' in buffer:
-                    line, buffer = buffer.split(b'\n', 1)
+                # Try to extract complete messages (length-prefixed format)
+                while len(buffer) >= 4:
+                    # Read the length prefix (4 bytes, big-endian)
+                    msg_length = int.from_bytes(buffer[:4], byteorder='big')
+                    
+                    # Check if we have the complete message
+                    if len(buffer) < 4 + msg_length:
+                        break  # Wait for more data
+                    
+                    # Extract the message
+                    msg_bytes = buffer[4:4+msg_length]
+                    buffer = buffer[4+msg_length:]  # Remove from buffer
+                    
                     if self.message_handler:
-                        # Try to extract sender_id from message to use correct peer_id
-                        # Fall back to conn.peer_id if message parsing fails
                         try:
+                            msg_json = msg_bytes.decode('utf-8')
                             import json
-                            msg_dict = json.loads(line.decode('utf-8'))
+                            msg_dict = json.loads(msg_json)
                             sender_id = msg_dict.get('sender_id', conn.peer_id)
-                            # Update conn.peer_id if we got a different sender_id (handshake case)
-                            if sender_id != conn.peer_id and sender_id in self.connections:
-                                # Already associated, use the sender_id
-                                pass
-                            elif sender_id != conn.peer_id:
-                                # New association needed
+                            
+                            # Update connection peer_id if needed (handshake)
+                            if sender_id != conn.peer_id and sender_id not in self.connections:
                                 self.associate_temp_id_with_peer_id(conn.peer_id, sender_id)
-                            self.message_handler(sender_id, line.decode('utf-8'))
-                        except:
-                            # Fallback to using conn.peer_id if message parsing fails
-                            self.message_handler(conn.peer_id, line.decode('utf-8'))
+                            
+                            self.message_handler(sender_id, msg_json)
+                        except Exception as e:
+                            self.logger.error(f"Error parsing message: {e}")
+                            # Fallback
+                            self.message_handler(conn.peer_id, msg_bytes.decode('utf-8', errors='replace'))
                         
             except Exception as e:
                 self.logger.error(f"Error handling connection {conn.peer_id}: {e}")
@@ -89,13 +97,13 @@ class ConnectionManager:
         self.remove_connection(conn.peer_id)
     
     def send_message(self, peer_id: str, message: bytes) -> bool:
-        """Send message to a specific peer"""
+        """Send message to a specific peer (message should be length-prefixed)"""
         with self.lock:
             if peer_id in self.connections:
                 conn = self.connections[peer_id]
                 try:
                     with conn.lock:
-                        conn.socket.sendall(message + b'\n')
+                        conn.socket.sendall(message)
                     return True
                 except Exception as e:
                     self.logger.error(f"Failed to send message to {peer_id}: {e}")

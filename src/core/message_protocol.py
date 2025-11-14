@@ -44,12 +44,15 @@ class MessageProtocol:
     
     @staticmethod
     def encode_message(message: Dict[str, Any]) -> bytes:
-        """Encode message to bytes"""
-        return json.dumps(message).encode('utf-8')
+        """Encode message to bytes with length prefix for reliable framing"""
+        json_bytes = json.dumps(message).encode('utf-8')
+        # Prefix with length (4 bytes, big-endian) so we know exactly how many bytes to read
+        length = len(json_bytes)
+        return length.to_bytes(4, byteorder='big') + json_bytes
     
     @staticmethod
     def decode_message(data: bytes) -> Optional[Dict[str, Any]]:
-        """Decode message from bytes"""
+        """Decode message from bytes (expects raw JSON, not length-prefixed)"""
         try:
             message = json.loads(data.decode('utf-8'))
             # Validate required fields
