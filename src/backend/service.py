@@ -148,6 +148,7 @@ class P2PService:
     def _handle_handshake(self, message: Dict):
         sender_id = message["sender_id"]
         peer_info = message.get("content", {})
+        logger.info(f"Received handshake from {sender_id}: {peer_info}")
         peer = Peer(
             peer_id=sender_id,
             address=peer_info.get("address", "unknown"),

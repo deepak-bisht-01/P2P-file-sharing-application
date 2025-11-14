@@ -45,7 +45,7 @@ class ConnectionManager:
             handler_thread.daemon = True
             handler_thread.start()
         
-            self.logger.info(f"Added connection for peer {peer_id}")
+            self.logger.info(f"Added connection for peer {peer_id} (remote address={address})")
     
     def _handle_connection(self, conn: Connection):
         """Handle incoming messages from a connection"""
@@ -81,6 +81,7 @@ class ConnectionManager:
                             
                             # Update connection peer_id if needed (handshake)
                             if sender_id != conn.peer_id and sender_id not in self.connections:
+                                self.logger.info(f"Associating temp id {conn.peer_id} with sender_id {sender_id} from message")
                                 self.associate_temp_id_with_peer_id(conn.peer_id, sender_id)
                             
                             self.message_handler(sender_id, msg_json)
@@ -156,6 +157,21 @@ class ConnectionManager:
 
             self.logger.info(f"Associated temp_id {temp_id} with real_id {real_id}")
             return True
+
+    def dump_state(self) -> Dict:
+        """Return a serializable snapshot of the connection manager state for diagnostics."""
+        with self.lock:
+            return {
+                "connections": [
+                    {
+                        "peer_id": pid,
+                        "address": f"{conn.address[0]}:{conn.address[1]}",
+                        "is_active": conn.is_active
+                    }
+                    for pid, conn in self.connections.items()
+                ],
+                "address_to_peer": {f"{addr[0]}:{addr[1]}": pid for addr, pid in self.address_to_peer.items()}
+            }
     
     def on_handshake(self, conn, peer_id_from_handshake):
     # remove the temporary mapping

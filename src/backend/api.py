@@ -4,6 +4,7 @@ from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from typing import Optional
 import logging
+import threading
 from pathlib import Path
 from src.backend.file_transfer import SHARED_DIR, DOWNLOAD_DIR
 
@@ -11,18 +12,26 @@ logger = logging.getLogger(__name__)
 
 # Lazy-initialize p2p_service to avoid issues during import
 _p2p_service_instance = None
+_p2p_service_lock = threading.Lock()
+
 
 def get_p2p_service():
-    """Lazy-initialize the P2P service"""
+    """Thread-safe lazy-initialize the P2P service.
+
+    Uses a lock to ensure multiple concurrent requests don't create
+    more than one instance.
+    """
     global _p2p_service_instance
     if _p2p_service_instance is None:
-        try:
-            from src.backend.service import P2PService
-            _p2p_service_instance = P2PService()
-            logger.info("P2P Service initialized")
-        except Exception as e:
-            logger.error(f"Failed to initialize P2P Service: {e}", exc_info=True)
-            raise
+        with _p2p_service_lock:
+            if _p2p_service_instance is None:
+                try:
+                    from src.backend.service import P2PService
+                    _p2p_service_instance = P2PService()
+                    logger.info("P2P Service initialized")
+                except Exception as e:
+                    logger.error(f"Failed to initialize P2P Service: {e}", exc_info=True)
+                    raise
     return _p2p_service_instance
 
 
@@ -157,6 +166,17 @@ def list_transfers():
         raise HTTPException(status_code=500, detail=f"Failed to list transfers: {str(e)}")
 
 
+@app.get("/api/debug/connections")
+def debug_connections():
+    """Return diagnostic information from the ConnectionManager."""
+    try:
+        cm = get_p2p_service().connection_manager
+        return cm.dump_state()
+    except Exception as e:
+        logger.error(f"Error getting connection debug info: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get debug info: {e}")
+
+
 @app.get("/api/files/preview/{file_id}")
 def preview_file(file_id: str):
     """Serve file for preview - checks both shared and downloaded files"""
@@ -228,5 +248,12 @@ def list_downloaded_files():
 
 @app.on_event("shutdown")
 def shutdown_event():
-    get_p2p_service().shutdown()
+    # Avoid creating the service instance during shutdown; only shutdown
+    # if it was already created earlier.
+    global _p2p_service_instance
+    try:
+        if _p2p_service_instance is not None:
+            _p2p_service_instance.shutdown()
+    except Exception as e:
+        logger.error(f"Error shutting down P2P service: {e}")
 
