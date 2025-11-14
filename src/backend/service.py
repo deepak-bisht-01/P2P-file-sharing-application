@@ -170,8 +170,11 @@ class P2PService:
                 logger.error("Failed to send handshake response to %s: %s", sender_id[:8], exc)
 
     def _handle_text_message(self, message: Dict):
-        # For now, we only record the message. Additional logic could go here.
-        pass
+        """Handle incoming text message"""
+        sender_id = message.get("sender_id", "unknown")
+        content = message.get("content", {})
+        text = content.get("text", "")
+        logger.info("Received text message from %s: %s", sender_id[:8] if len(sender_id) > 8 else sender_id, text[:50])
 
     def _handle_ping(self, message: Dict):
         pong = MessageProtocol.create_message(
@@ -192,27 +195,70 @@ class P2PService:
             if message.recipient_id:
                 target_id = message.recipient_id
                 active = set(self.connection_manager.get_active_connections())
+                
+                # Check if target_id is in active connections (could be peer_id or temp address)
                 if target_id not in active:
-                    host = None
-                    port = None
-                    if ":" in target_id:
-                        try:
-                            host, port_str = target_id.rsplit(":", 1)
-                            port = int(port_str)
-                        except Exception:
-                            host = None
-                            port = None
-                    if host is None or port is None:
-                        peer = self.peer_registry.get_peer(target_id)
-                        if peer:
-                            host = peer.address
-                            port = peer.port
-                            target_id = f"{host}:{port}"
-                    if host and port:
-                        self.connect_to_peer(host, port)
+                    # Try to find the peer and connect if needed
+                    peer = self.peer_registry.get_peer(target_id)
+                    if peer:
+                        # Check if we have a connection to this peer by their real peer_id
+                        if peer.peer_id in active:
+                            target_id = peer.peer_id
+                        else:
+                            # Try connecting using address:port format
+                            temp_id = f"{peer.address}:{peer.port}"
+                            if temp_id in active:
+                                target_id = temp_id
+                            else:
+                                # Need to establish connection
+                                try:
+                                    self.connect_to_peer(peer.address, peer.port)
+                                    # Wait a bit for connection to establish
+                                    import time
+                                    time.sleep(0.2)
+                                    active = set(self.connection_manager.get_active_connections())
+                                    # Check again after connection
+                                    if peer.peer_id in active:
+                                        target_id = peer.peer_id
+                                    elif temp_id in active:
+                                        target_id = temp_id
+                                except Exception as exc:
+                                    logger.warning("Failed to connect to peer %s: %s", target_id[:8], exc)
+                    else:
+                        # target_id might be in address:port format, try to connect
+                        if ":" in target_id:
+                            try:
+                                host, port_str = target_id.rsplit(":", 1)
+                                port = int(port_str)
+                                self.connect_to_peer(host, port)
+                                import time
+                                time.sleep(0.2)
+                                active = set(self.connection_manager.get_active_connections())
+                                # Check if connection was established
+                                if target_id not in active:
+                                    # Check if it's now under a peer_id
+                                    for conn_id in active:
+                                        peer = self.peer_registry.get_peer(conn_id)
+                                        if peer and peer.address == host and peer.port == port:
+                                            target_id = conn_id
+                                            break
+                            except Exception:
+                                pass
+                
+                # Final check - if still not in active, log warning
+                if target_id not in active:
+                    logger.warning("Target %s not in active connections: %s. Available: %s", 
+                                 target_id[:8] if len(target_id) > 8 else target_id, 
+                                 list(active)[:5],
+                                 [p.peer_id[:8] for p in self.peer_registry.get_all_peers()][:5])
+                else:
+                    logger.info("Sending message to %s (connection found)", target_id[:8] if len(target_id) > 8 else target_id)
+                
                 success = self.connection_manager.send_message(target_id, encoded)
                 if not success:
-                    logger.warning("Failed to send message to %s", target_id)
+                    logger.warning("Failed to send message to %s - connection may be closed", target_id)
+                else:
+                    logger.info("Message sent successfully to %s", target_id[:8] if len(target_id) > 8 else target_id)
             else:
                 active = self.connection_manager.get_active_connections()
                 if not active:
@@ -324,10 +370,11 @@ class P2PService:
             message_id=str(uuid.uuid4()),
             sender_id=self.identity.peer_id,
             recipient_id=recipient_id,
-            message_type="text",
+            message_type=MessageType.TEXT.value,  # Use enum value to ensure consistency
             content={"text": text}
         )
-
+        
+        logger.info("Queuing text message to %s: %s", recipient_id[:8] if len(recipient_id) > 8 else recipient_id, text[:50])
         return self.message_queue.put_message(message)
 
     def broadcast_text_message(self, text: str) -> bool:
@@ -337,9 +384,10 @@ class P2PService:
             message_id=str(uuid.uuid4()),
             sender_id=self.identity.peer_id,
             recipient_id=None,
-            message_type="text",
+            message_type=MessageType.TEXT.value,  # Use enum value to ensure consistency
             content={"text": text}
         )
+        logger.info("Queuing broadcast text message: %s", text[:50])
         return self.message_queue.put_message(message)
 
     def get_messages(self, limit: int = 100) -> List[Dict]:
