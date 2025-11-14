@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Set, Tuple, Callable
 from src.core.message_protocol import MessageProtocol
 
 
-DEFAULT_CHUNK_SIZE = 512 * 1024  # 512KiB chunks for faster transfers (base64 adds ~33% overhead, larger chunks = fewer messages)
+DEFAULT_CHUNK_SIZE = 1024 * 1024  # 1MiB chunks for faster transfers (base64 adds ~33% overhead, larger chunks = fewer messages, faster overall)
 SHARED_DIR = Path("shared_files")
 DOWNLOAD_DIR = Path("downloads")
 
@@ -399,10 +399,14 @@ class FileTransferManager:
         return status
 
     def _spawn_workers(self, session: DownloadSession):
-        # Use more workers per peer for parallel chunk requests
-        # Each peer can handle multiple concurrent chunk requests
-        # Increased parallelism: 4-8 workers per peer for faster downloads
-        workers_per_peer = min(8, max(4, session.status.chunk_count // 3))  # 4-8 workers per peer
+        # Use aggressive parallelism: more workers per peer for maximum speed
+        # Each peer can handle many concurrent chunk requests
+        # For small files, use fewer workers; for large files, use more
+        if session.status.chunk_count <= 5:
+            workers_per_peer = min(3, session.status.chunk_count)
+        else:
+            workers_per_peer = min(12, max(6, session.status.chunk_count // 2))  # 6-12 workers per peer
+        
         max_workers = min(len(session.remote_peers) * workers_per_peer, session.status.chunk_count)
         peers_list = list(session.remote_peers) * workers_per_peer  # Distribute workers across peers
         peers_list = peers_list[:max_workers]  # Limit to max_workers
@@ -431,89 +435,110 @@ class FileTransferManager:
         logger = logging.getLogger('FileTransferManager')
         retry_count = 0
         max_retries = 3
+        max_pending = 3  # Request up to 3 chunks in parallel (pipelining)
+        pending_requests = {}  # chunk_index -> (event, request_time)
         
         while not session.cancel_event.is_set():
-            try:
-                chunk_index = session.chunk_queue.get_nowait()
-            except queue.Empty:
-                # no more chunks
-                break
-
-            event = threading.Event()
-            with session.pending_lock:
-                session.pending_events[chunk_index] = event
-
-            request_payload = {"file_id": session.status.file_id, "chunk_index": chunk_index}
-            request_message = MessageProtocol.create_chunk_request(
-                self.peer_id, peer_id, request_payload
-            )
-            logger.info(f"Sending chunk request {chunk_index} for file {session.status.file_id[:8]} to peer {peer_id[:8]}")
-            success = self.connection_manager.send_message(peer_id, request_message)
-            if not success:
-                logger.warning(f"Failed to send chunk request {chunk_index} to peer {peer_id[:8]} - connection may be closed")
-                with session.pending_lock:
-                    session.pending_events.pop(chunk_index, None)
-                session.chunk_queue.put(chunk_index)
-                retry_count += 1
-                if retry_count > max_retries:
-                    logger.error(f"Too many failures with peer {peer_id[:8]}, stopping worker")
-                    break
-                time.sleep(0.5)
-                continue
-            logger.debug(f"Chunk request {chunk_index} sent successfully, waiting for response...")
-
-            retry_count = 0  # Reset on success
-            received = event.wait(timeout=30)  # Longer timeout for larger chunks
-            if not received:
-                logger.warning(f"Timeout waiting for chunk {chunk_index} from peer {peer_id[:8]}")
-                with session.pending_lock:
-                    session.pending_events.pop(chunk_index, None)
-                session.chunk_queue.put(chunk_index)
-                retry_count += 1
-                if retry_count > max_retries:
-                    logger.error(f"Too many timeouts with peer {peer_id[:8]}, stopping worker")
-                    break
-                continue
-
-            with session.pending_lock:
-                data = session.chunk_payloads.pop(chunk_index, None)
-                session.pending_events.pop(chunk_index, None)
-
-            if data is None:
-                session.chunk_queue.put(chunk_index)
-                continue
-
-            with session.file_lock:
+            # Fill pipeline: request multiple chunks in parallel
+            while len(pending_requests) < max_pending:
                 try:
-                    if session.file_handle is None:
-                        logger.error(f"File handle is None for file {session.status.file_id[:8]}")
-                        session.stop("File handle not open")
+                    chunk_index = session.chunk_queue.get_nowait()
+                except queue.Empty:
+                    break
+                
+                event = threading.Event()
+                request_time = time.time()
+                with session.pending_lock:
+                    session.pending_events[chunk_index] = event
+                    pending_requests[chunk_index] = (event, request_time)
+                
+                request_payload = {"file_id": session.status.file_id, "chunk_index": chunk_index}
+                request_message = MessageProtocol.create_chunk_request(
+                    self.peer_id, peer_id, request_payload
+                )
+                logger.debug(f"Sending chunk request {chunk_index} for file {session.status.file_id[:8]} to peer {peer_id[:8]}")
+                success = self.connection_manager.send_message(peer_id, request_message)
+                if not success:
+                    logger.warning(f"Failed to send chunk request {chunk_index} to peer {peer_id[:8]}")
+                    with session.pending_lock:
+                        session.pending_events.pop(chunk_index, None)
+                    if chunk_index in pending_requests:
+                        pending_requests.pop(chunk_index, None)
+                    session.chunk_queue.put(chunk_index)
+                    retry_count += 1
+                    if retry_count > max_retries:
+                        logger.error(f"Too many failures with peer {peer_id[:8]}, stopping worker")
                         return
-                    session.file_handle.seek(chunk_index * session.status.chunk_size)
-                    session.file_handle.write(data)
-                    session.file_handle.flush()  # Ensure data is written to disk
-                    logger.info(f"Wrote chunk {chunk_index} ({len(data)} bytes) for file {session.status.file_id[:8]}")
-                except OSError as exc:
-                    logger.error(f"I/O error writing chunk {chunk_index}: {exc}")
-                    session.stop(f"I/O error writing chunk: {exc}")
-                    return
-
-            with session.session_lock:
-                session.status.bytes_received += len(data)
-                session.status.chunks_completed += 1
-                session.status.peers_used.add(peer_id)
-                logger.info(f"Progress: {session.status.chunks_completed}/{session.status.chunk_count} chunks, {session.status.bytes_received}/{session.status.file_size} bytes")
-
-            if session.status.chunks_completed >= session.status.chunk_count:
-                self._finalise_download(session)
+                    time.sleep(0.1)  # Shorter delay for retry
+                    break
+            
+            if not pending_requests:
+                # No pending requests and queue is empty
                 break
-
-        # Wait for remaining workers to finish if this worker completed the queue
-        if (
-            session.status.chunks_completed >= session.status.chunk_count
-            and not session.cancel_event.is_set()
-        ):
-            self._finalise_download(session)
+            
+            # Wait for any pending request to complete (with shorter timeout)
+            completed = False
+            for chunk_idx, (event, req_time) in list(pending_requests.items()):
+                if event.wait(timeout=0.5):  # Check frequently
+                    completed = True
+                    pending_requests.pop(chunk_idx, None)
+                    retry_count = 0  # Reset on success
+                    
+                    with session.pending_lock:
+                        data = session.chunk_payloads.pop(chunk_idx, None)
+                        session.pending_events.pop(chunk_idx, None)
+                    
+                    if data is None:
+                        session.chunk_queue.put(chunk_idx)
+                        continue
+                    
+                    # Write chunk immediately
+                    with session.file_lock:
+                        try:
+                            if session.file_handle is None:
+                                logger.error(f"File handle is None for file {session.status.file_id[:8]}")
+                                session.stop("File handle not open")
+                                return
+                            session.file_handle.seek(chunk_idx * session.status.chunk_size)
+                            session.file_handle.write(data)
+                            session.file_handle.flush()
+                            logger.debug(f"Wrote chunk {chunk_idx} ({len(data)} bytes) for file {session.status.file_id[:8]}")
+                        except OSError as exc:
+                            logger.error(f"I/O error writing chunk {chunk_idx}: {exc}")
+                            session.stop(f"I/O error writing chunk: {exc}")
+                            return
+                    
+                    with session.session_lock:
+                        session.status.bytes_received += len(data)
+                        session.status.chunks_completed += 1
+                        session.status.peers_used.add(peer_id)
+                        logger.debug(f"Progress: {session.status.chunks_completed}/{session.status.chunk_count} chunks, {session.status.bytes_received}/{session.status.file_size} bytes")
+                    
+                    if session.status.chunks_completed >= session.status.chunk_count:
+                        self._finalise_download(session)
+                        return
+                    break
+            
+            # Check for timeouts
+            if not completed:
+                # Remove timed-out requests (10 seconds max per request)
+                current_time = time.time()
+                timed_out = []
+                for chunk_idx, (event, req_time) in pending_requests.items():
+                    if not event.is_set() and (current_time - req_time) > 10:
+                        timed_out.append(chunk_idx)
+                
+                if timed_out:
+                    logger.warning(f"Timeout waiting for chunks {timed_out} from peer {peer_id[:8]}")
+                    for chunk_idx in timed_out:
+                        with session.pending_lock:
+                            session.pending_events.pop(chunk_idx, None)
+                        pending_requests.pop(chunk_idx, None)
+                        session.chunk_queue.put(chunk_idx)
+                    retry_count += 1
+                    if retry_count > max_retries:
+                        logger.error(f"Too many timeouts with peer {peer_id[:8]}, stopping worker")
+                        return
 
     def _finalise_download(self, session: DownloadSession):
         if session.status.status == "completed":
