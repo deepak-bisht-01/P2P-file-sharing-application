@@ -285,18 +285,33 @@ class FileTransferManager:
         self.connection_manager.send_message(sender_id, message)
 
     def handle_chunk_response(self, sender_id: str, response: Dict):
-        file_id = response["file_id"]
-        chunk_index = response["chunk_index"]
-        data = base64.b64decode(response["data"])
+        import logging
+        logger = logging.getLogger('FileTransferManager')
+        
+        file_id = response.get("file_id")
+        chunk_index = response.get("chunk_index")
+        
+        if not file_id or chunk_index is None:
+            logger.warning(f"Invalid chunk response from {sender_id[:8]}: missing file_id or chunk_index")
+            return
+            
+        try:
+            data = base64.b64decode(response["data"])
+        except Exception as e:
+            logger.error(f"Failed to decode chunk data from {sender_id[:8]}: {e}")
+            return
 
         session = self.downloads.get(file_id)
         if not session:
+            logger.warning(f"Received chunk {chunk_index} for unknown file {file_id[:8]}")
             return
 
+        logger.debug(f"Received chunk {chunk_index} for file {file_id[:8]} from {sender_id[:8]}")
         with session.pending_lock:
             session.chunk_payloads[chunk_index] = data
             if chunk_index in session.pending_events:
                 session.pending_events[chunk_index].set()
+                logger.debug(f"Notified waiting worker for chunk {chunk_index}")
 
     # ------------------------------------------------------------------
     # Downloads
@@ -334,6 +349,8 @@ class FileTransferManager:
             sender_id=self.peer_id,
             manifest_checksum=manifest.get("checksum", ""),
         )
+        # Initialize peers_used with the peers we're attempting to use
+        session.status.peers_used = peers.copy()
         session.status.status = "running"
         session.open_file()
 
@@ -346,7 +363,18 @@ class FileTransferManager:
 
     def _spawn_workers(self, session: DownloadSession):
         max_workers = max(1, min(len(session.remote_peers), session.status.chunk_count))
-        for peer_id in list(session.remote_peers)[:max_workers]:
+        peers_list = list(session.remote_peers)[:max_workers]
+        
+        if not peers_list:
+            session.status.status = "failed"
+            session.status.error = "No peers available to download from"
+            return
+            
+        import logging
+        logger = logging.getLogger('FileTransferManager')
+        logger.info(f"Spawning {len(peers_list)} workers for file {session.status.file_id[:8]} from peers: {[p[:8] for p in peers_list]}")
+        
+        for peer_id in peers_list:
             worker = threading.Thread(
                 target=self._download_worker,
                 args=(session, peer_id),
@@ -357,6 +385,11 @@ class FileTransferManager:
             worker.start()
 
     def _download_worker(self, session: DownloadSession, peer_id: str):
+        import logging
+        logger = logging.getLogger('FileTransferManager')
+        retry_count = 0
+        max_retries = 3
+        
         while not session.cancel_event.is_set():
             try:
                 chunk_index = session.chunk_queue.get_nowait()
@@ -374,17 +407,28 @@ class FileTransferManager:
             )
             success = self.connection_manager.send_message(peer_id, request_message)
             if not success:
+                logger.warning(f"Failed to send chunk request {chunk_index} to peer {peer_id[:8]}")
                 with session.pending_lock:
                     session.pending_events.pop(chunk_index, None)
                 session.chunk_queue.put(chunk_index)
+                retry_count += 1
+                if retry_count > max_retries:
+                    logger.error(f"Too many failures with peer {peer_id[:8]}, stopping worker")
+                    break
                 time.sleep(0.5)
                 continue
 
-            received = event.wait(timeout=5)
+            retry_count = 0  # Reset on success
+            received = event.wait(timeout=10)  # Increased timeout
             if not received:
+                logger.warning(f"Timeout waiting for chunk {chunk_index} from peer {peer_id[:8]}")
                 with session.pending_lock:
                     session.pending_events.pop(chunk_index, None)
                 session.chunk_queue.put(chunk_index)
+                retry_count += 1
+                if retry_count > max_retries:
+                    logger.error(f"Too many timeouts with peer {peer_id[:8]}, stopping worker")
+                    break
                 continue
 
             with session.pending_lock:

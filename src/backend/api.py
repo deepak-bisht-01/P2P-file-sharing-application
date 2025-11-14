@@ -35,7 +35,12 @@ app.add_middleware(
 
 @app.get("/api/status")
 def get_status():
-    return p2p_service.get_status()
+    try:
+        return p2p_service.get_status()
+    except Exception as e:
+        logger = logging.getLogger(__name__)
+        logger.error(f"Error getting status: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to get status: {str(e)}")
 
 
 @app.get("/api/peers")

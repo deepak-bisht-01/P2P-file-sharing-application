@@ -201,23 +201,39 @@ class P2PService:
     # Public API
     # ------------------------------------------------------------------
     def get_status(self) -> Dict:
-        stats = self.message_queue.get_stats()
-        file_listing = self.file_manager.list_shared_files()
-        transfers = self.file_manager.get_transfers()
-        active_transfers = sum(
-            1 for transfer in transfers if transfer["status"] in {"pending", "running"}
-        )
-        return {
-            "peer_id": self.identity.peer_id,
-            "port": self.port,
-            "messages_processed": stats["messages_processed"],
-            "messages_failed": stats["messages_failed"],
-            "queue_size": stats["queue_size"],
-            "active_connections": self.connection_manager.get_active_connections(),
-            "files_shared_local": len(file_listing["local"]),
-            "files_known_remote": len(file_listing["remote"]),
-            "transfers_active": active_transfers,
-        }
+        try:
+            stats = self.message_queue.get_stats()
+            file_listing = self.list_shared_files()  # Use service method, not file_manager directly
+            transfers = self.file_manager.get_transfers()
+            active_transfers = sum(
+                1 for transfer in transfers if transfer["status"] in {"pending", "running"}
+            )
+            return {
+                "peer_id": self.identity.peer_id,
+                "port": self.port,
+                "messages_processed": stats["messages_processed"],
+                "messages_failed": stats["messages_failed"],
+                "queue_size": stats["queue_size"],
+                "active_connections": self.connection_manager.get_active_connections(),
+                "files_shared_local": len(file_listing["local"]),
+                "files_known_remote": len(file_listing["remote"]),
+                "transfers_active": active_transfers,
+            }
+        except Exception as e:
+            logger.error(f"Error getting status: {e}", exc_info=True)
+            # Return minimal status on error
+            return {
+                "peer_id": self.identity.peer_id,
+                "port": self.port,
+                "messages_processed": 0,
+                "messages_failed": 0,
+                "queue_size": 0,
+                "active_connections": [],
+                "files_shared_local": 0,
+                "files_known_remote": 0,
+                "transfers_active": 0,
+                "error": str(e)
+            }
 
     def list_peers(self) -> List[Dict]:
         peers = self.peer_registry.get_all_peers()
