@@ -276,7 +276,13 @@ class FileTransferManager:
 
         with open(shared.path, "rb") as handle:
             handle.seek(chunk_index * shared.chunk_size)
-            return handle.read(shared.chunk_size)
+            # For the last chunk, only read up to the file size
+            if chunk_index == shared.chunk_count - 1:
+                # Last chunk: read only what's needed
+                bytes_remaining = shared.file_size - (chunk_index * shared.chunk_size)
+                return handle.read(bytes_remaining)
+            else:
+                return handle.read(shared.chunk_size)
 
     def handle_chunk_request(self, sender_id: str, request: Dict):
         import logging
@@ -500,8 +506,15 @@ class FileTransferManager:
                                 session.stop("File handle not open")
                                 return
                             session.file_handle.seek(chunk_idx * session.status.chunk_size)
-                            session.file_handle.write(data)
+                            bytes_written = session.file_handle.write(data)
                             session.file_handle.flush()
+                            
+                            # Verify that we wrote all the data
+                            if bytes_written != len(data):
+                                logger.error(f"Write error for chunk {chunk_idx}: wrote {bytes_written} bytes but data was {len(data)} bytes")
+                                session.stop(f"Write error for chunk {chunk_idx}")
+                                return
+                            
                             logger.debug(f"Wrote chunk {chunk_idx} ({len(data)} bytes) for file {session.status.file_id[:8]}")
                         except OSError as exc:
                             logger.error(f"I/O error writing chunk {chunk_idx}: {exc}")
