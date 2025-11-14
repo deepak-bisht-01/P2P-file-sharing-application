@@ -86,3 +86,13 @@ export async function fetchTransfers(): Promise<FileTransfer[]> {
   return payload.transfers;
 }
 
+export function getFilePreviewUrl(fileId: string): string {
+  return `${API_BASE}/api/files/preview/${fileId}`;
+}
+
+export function isImageFile(fileName: string): boolean {
+  const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.bmp', '.webp', '.svg'];
+  const ext = fileName.toLowerCase().substring(fileName.lastIndexOf('.'));
+  return imageExtensions.includes(ext);
+}
+

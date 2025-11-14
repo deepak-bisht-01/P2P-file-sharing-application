@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Set, Tuple, Callable
 from src.core.message_protocol import MessageProtocol
 
 
-DEFAULT_CHUNK_SIZE = 64 * 1024  # 64KiB chunks keep messages under ~90KiB after base64
+DEFAULT_CHUNK_SIZE = 512 * 1024  # 512KiB chunks for faster transfers (base64 adds ~33% overhead, larger chunks = fewer messages)
 SHARED_DIR = Path("shared_files")
 DOWNLOAD_DIR = Path("downloads")
 
@@ -399,8 +399,13 @@ class FileTransferManager:
         return status
 
     def _spawn_workers(self, session: DownloadSession):
-        max_workers = max(1, min(len(session.remote_peers), session.status.chunk_count))
-        peers_list = list(session.remote_peers)[:max_workers]
+        # Use more workers per peer for parallel chunk requests
+        # Each peer can handle multiple concurrent chunk requests
+        # Increased parallelism: 4-8 workers per peer for faster downloads
+        workers_per_peer = min(8, max(4, session.status.chunk_count // 3))  # 4-8 workers per peer
+        max_workers = min(len(session.remote_peers) * workers_per_peer, session.status.chunk_count)
+        peers_list = list(session.remote_peers) * workers_per_peer  # Distribute workers across peers
+        peers_list = peers_list[:max_workers]  # Limit to max_workers
         
         if not peers_list:
             session.status.status = "failed"
@@ -458,7 +463,7 @@ class FileTransferManager:
             logger.debug(f"Chunk request {chunk_index} sent successfully, waiting for response...")
 
             retry_count = 0  # Reset on success
-            received = event.wait(timeout=10)  # Increased timeout
+            received = event.wait(timeout=30)  # Longer timeout for larger chunks
             if not received:
                 logger.warning(f"Timeout waiting for chunk {chunk_index} from peer {peer_id[:8]}")
                 with session.pending_lock:

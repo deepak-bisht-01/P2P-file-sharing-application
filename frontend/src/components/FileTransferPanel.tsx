@@ -1,5 +1,6 @@
 import { useMemo, useRef, useState } from "react";
 import { FileListing, FileManifest, FileTransfer } from "../types";
+import { getFilePreviewUrl, isImageFile } from "../api";
 
 interface Props {
   listing: FileListing | null;
@@ -51,6 +52,7 @@ export function FileTransferPanel({
 }: Props) {
   const inputRef = useRef<HTMLInputElement | null>(null);
   const [selectedFileName, setSelectedFileName] = useState<string | null>(null);
+  const [previewFile, setPreviewFile] = useState<{ fileId: string; fileName: string } | null>(null);
 
   const localFiles = listing?.local ?? [];
   const remoteFiles = listing?.remote ?? [];
@@ -132,7 +134,18 @@ export function FileTransferPanel({
                     {formatSize(file.file_size)} · {file.chunk_count} chunks
                   </p>
                 </div>
-                <span className="badge badge--neutral">Shared</span>
+                <div className="file-list__actions">
+                  {isImageFile(file.file_name) && (
+                    <button
+                      className="btn btn--ghost btn--small"
+                      type="button"
+                      onClick={() => setPreviewFile({ fileId: file.file_id, fileName: file.file_name })}
+                    >
+                      Preview
+                    </button>
+                  )}
+                  <span className="badge badge--neutral">Shared</span>
+                </div>
               </li>
             ))}
           </ul>
@@ -191,7 +204,19 @@ export function FileTransferPanel({
                     <li key={transfer.file_id} className="transfer-list__item">
                       <div className="transfer-list__summary">
                         <span className="file-list__name">{transfer.file_name}</span>
-                        <span className="transfer-list__status">{transfer.status}</span>
+                        <div className="transfer-list__actions">
+                          {isImageFile(transfer.file_name) && transfer.status === "running" && (
+                            <button
+                              className="btn btn--ghost btn--small"
+                              type="button"
+                              onClick={() => setPreviewFile({ fileId: transfer.file_id, fileName: transfer.file_name })}
+                              title="Preview (may show partial image)"
+                            >
+                              Preview
+                            </button>
+                          )}
+                          <span className="transfer-list__status">{transfer.status}</span>
+                        </div>
                       </div>
                       <div className="transfer-list__meta">
                         <span>{formatSize(transfer.bytes_received)}</span>
@@ -229,9 +254,20 @@ export function FileTransferPanel({
                     <li key={transfer.file_id} className="transfer-list__item">
                       <div className="transfer-list__summary">
                         <span className="file-list__name">{transfer.file_name}</span>
-                        <span className="transfer-list__status transfer-list__status--done">
-                          {transfer.status}
-                        </span>
+                        <div className="transfer-list__actions">
+                          {isImageFile(transfer.file_name) && (
+                            <button
+                              className="btn btn--ghost btn--small"
+                              type="button"
+                              onClick={() => setPreviewFile({ fileId: transfer.file_id, fileName: transfer.file_name })}
+                            >
+                              Preview
+                            </button>
+                          )}
+                          <span className="transfer-list__status transfer-list__status--done">
+                            {transfer.status}
+                          </span>
+                        </div>
                       </div>
                       <p className="transfer-list__details">
                         {formatSize(transfer.file_size)} · {transfer.chunk_count} chunks ·{" "}
@@ -245,6 +281,43 @@ export function FileTransferPanel({
           </div>
         )}
       </div>
+
+      {previewFile && (
+        <div className="preview-modal" onClick={() => setPreviewFile(null)}>
+          <div className="preview-modal__content" onClick={(e) => e.stopPropagation()}>
+            <div className="preview-modal__header">
+              <h3>{previewFile.fileName}</h3>
+              <button
+                className="btn btn--ghost"
+                type="button"
+                onClick={() => setPreviewFile(null)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="preview-modal__body">
+              {isImageFile(previewFile.fileName) ? (
+                <img
+                  src={getFilePreviewUrl(previewFile.fileId)}
+                  alt={previewFile.fileName}
+                  className="preview-image"
+                />
+              ) : (
+                <div className="preview-placeholder">
+                  <p>Preview not available for this file type</p>
+                  <a
+                    href={getFilePreviewUrl(previewFile.fileId)}
+                    download={previewFile.fileName}
+                    className="btn btn--primary"
+                  >
+                    Download File
+                  </a>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </section>
   );
 }
