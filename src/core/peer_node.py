@@ -28,7 +28,8 @@ class PeerNode:
             
             self.connection_manager = ConnectionManager(
                 message_handler=self._handle_message,
-                peer_registry=self.peer_registry
+                peer_registry=self.peer_registry,
+                peer_id=self.peer_id
             )
     
     def start(self):

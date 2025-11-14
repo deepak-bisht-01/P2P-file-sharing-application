@@ -45,7 +45,8 @@ class P2PService:
         # Set up networking components
         self.connection_manager = ConnectionManager(
             message_handler=self._handle_incoming_message,
-            peer_registry=self.peer_registry
+            peer_registry=self.peer_registry,
+            peer_id=self.identity.peer_id
         )
         self.peer_node = PeerNode(
             port=port, 

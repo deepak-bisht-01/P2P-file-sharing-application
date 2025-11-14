@@ -1,9 +1,11 @@
 import socket
 import threading
-from typing import Dict, Tuple, List
+import time
+from typing import Dict, Tuple, List, Optional
 import logging
 from collections import defaultdict
 from src.backend.models import Peer
+from src.core.message_protocol import MessageProtocol, MessageType
  # to avoid circular import
 class Connection:
     def __init__(self, socket: socket.socket, address: Tuple[str, int], peer_id: str = None):
@@ -12,20 +14,124 @@ class Connection:
         self.peer_id = peer_id
         self.is_active = True
         self.lock = threading.Lock()
+        self.last_activity = time.time()
+        self.last_ping = time.time()
 
 class ConnectionManager:
-    def __init__(self, message_handler=None, peer_registry=None):
+    def __init__(self, message_handler=None, peer_registry=None, peer_id: str = None):
         self.connections: Dict[str, Connection] = {}  # peer_id -> Connection
         self.address_to_peer: Dict[Tuple[str, int], str] = {}  # address -> peer_id
         self.lock = threading.RLock()
         self.message_handler = message_handler
         self.peer_registry = peer_registry   # ✅ store registry if provided
+        self.peer_id = peer_id  # Store peer_id for creating ping messages
         self.logger = logging.getLogger('ConnectionManager')
+        self.read_timeout = 30.0  # 30 second read timeout
+        self.ping_interval = 20.0  # Send ping every 20 seconds
+        self.connection_timeout = 60.0  # Mark connection dead after 60 seconds of no activity
+        self._keepalive_thread = None
+        self._start_keepalive_thread()
+    
+    def _start_keepalive_thread(self):
+        """Start the keepalive thread that periodically sends pings to maintain connections"""
+        if self._keepalive_thread is None or not self._keepalive_thread.is_alive():
+            self._keepalive_thread = threading.Thread(target=self._keepalive_loop, daemon=True)
+            self._keepalive_thread.start()
+            self.logger.info("Keepalive thread started")
+    
+    def _keepalive_loop(self):
+        """Periodically check connections and send pings if needed"""
+        while True:
+            try:
+                time.sleep(self.ping_interval)
+                current_time = time.time()
+                
+                with self.lock:
+                    connections_to_check = list(self.connections.items())
+                
+                for peer_id, conn in connections_to_check:
+                    if not conn.is_active:
+                        continue
+                    
+                    # Check if connection has timed out
+                    time_since_activity = current_time - conn.last_activity
+                    if time_since_activity > self.connection_timeout:
+                        self.logger.warning(f"Connection {peer_id} timed out (no activity for {time_since_activity:.1f}s)")
+                        self.remove_connection(peer_id)
+                        continue
+                    
+                    # Send ping if needed (ping interval has passed)
+                    time_since_ping = current_time - conn.last_ping
+                    if time_since_ping >= self.ping_interval:
+                        try:
+                            # Create proper ping message using MessageProtocol
+                            if self.peer_id:
+                                ping_message = MessageProtocol.create_message(
+                                    MessageType.PING,
+                                    self.peer_id,
+                                    recipient_id=peer_id
+                                )
+                                ping_msg = MessageProtocol.encode_message(ping_message)
+                            else:
+                                # Fallback: simple ping if peer_id not available
+                                ping_msg = b'\x00\x00\x00\x0c{"type":"ping"}'
+                            with conn.lock:
+                                conn.socket.sendall(ping_msg)
+                            conn.last_ping = current_time
+                            conn.last_activity = current_time
+                        except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                            errno = getattr(e, 'winerror', getattr(e, 'errno', None))
+                            if errno in (10054, 10053, 10038):
+                                self.logger.info(f"Connection {peer_id} closed during ping")
+                            else:
+                                self.logger.warning(f"Failed to send ping to {peer_id}: {e}")
+                            self.remove_connection(peer_id)
+                        except Exception as e:
+                            self.logger.error(f"Error sending ping to {peer_id}: {e}")
+                            self.remove_connection(peer_id)
+            except Exception as e:
+                self.logger.error(f"Error in keepalive loop: {e}")
+                time.sleep(1)  # Brief pause before retrying
+    
     def add_connection(self, sock: socket.socket, address: Tuple[str, int], peer_id: str = None):
         """Add a new connection"""
         with self.lock:
             if not peer_id:
                 peer_id = f"{address[0]}:{address[1]}"
+            
+            # Check if we already have a connection to this peer
+            # If it's a temp ID (host:port), check by address
+            if peer_id in self.connections:
+                existing_conn = self.connections[peer_id]
+                if existing_conn.is_active:
+                    self.logger.warning(f"Connection to {peer_id} already exists, closing old socket")
+                    try:
+                        existing_conn.socket.close()
+                    except:
+                        pass
+                # Remove old connection
+                del self.connections[peer_id]
+            
+            # Also check by address to avoid duplicates
+            if address in self.address_to_peer:
+                old_peer_id = self.address_to_peer[address]
+                if old_peer_id in self.connections:
+                    existing_conn = self.connections[old_peer_id]
+                    if existing_conn.is_active:
+                        self.logger.warning(f"Connection to {address} already exists as {old_peer_id}, closing old socket")
+                        try:
+                            existing_conn.socket.close()
+                        except:
+                            pass
+                    del self.connections[old_peer_id]
+        
+            # Set socket options for better reliability
+            try:
+                sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+                # Set read timeout to detect dead connections
+                sock.settimeout(self.read_timeout)
+            except Exception as e:
+                self.logger.warning(f"Could not set socket options: {e}")
         
             conn = Connection(sock, address, peer_id)
             self.connections[peer_id] = conn
@@ -55,14 +161,23 @@ class ConnectionManager:
             try:
                 data = conn.socket.recv(4096)
                 if not data:
+                    # Remote peer closed connection gracefully
+                    self.logger.info(f"Connection {conn.peer_id} closed by remote peer")
                     break
                 
+                # Update last activity time
+                conn.last_activity = time.time()
                 buffer += data
                 
                 # Try to extract complete messages (length-prefixed format)
                 while len(buffer) >= 4:
                     # Read the length prefix (4 bytes, big-endian)
                     msg_length = int.from_bytes(buffer[:4], byteorder='big')
+                    
+                    # Sanity check: reject unreasonably large messages
+                    if msg_length > 10 * 1024 * 1024:  # 10MB max
+                        self.logger.error(f"Message too large from {conn.peer_id}: {msg_length} bytes")
+                        break
                     
                     # Check if we have the complete message
                     if len(buffer) < 4 + msg_length:
@@ -88,9 +203,34 @@ class ConnectionManager:
                         except Exception as e:
                             self.logger.error(f"Error parsing message: {e}")
                             # Fallback
-                            self.message_handler(conn.peer_id, msg_bytes.decode('utf-8', errors='replace'))
+                            try:
+                                self.message_handler(conn.peer_id, msg_bytes.decode('utf-8', errors='replace'))
+                            except:
+                                pass
                         
+            except socket.timeout:
+                # Read timeout - check if connection is still alive
+                if time.time() - conn.last_activity > self.connection_timeout:
+                    self.logger.warning(f"Connection {conn.peer_id} timed out (no activity for {self.connection_timeout}s)")
+                    break
+                # Otherwise, continue waiting
+                continue
+            except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                # Connection was reset or closed
+                errno = getattr(e, 'winerror', getattr(e, 'errno', None))
+                if errno == 10054 or errno == 10053:  # Windows: connection reset/aborted
+                    self.logger.info(f"Connection {conn.peer_id} reset by remote host")
+                else:
+                    self.logger.warning(f"Connection {conn.peer_id} error: {e}")
+                break
             except Exception as e:
+                # Check if socket is still valid
+                if not conn.is_active:
+                    break
+                errno = getattr(e, 'winerror', getattr(e, 'errno', None))
+                if errno == 10038:  # Windows: not a socket
+                    self.logger.warning(f"Socket for {conn.peer_id} is no longer valid")
+                    break
                 self.logger.error(f"Error handling connection {conn.peer_id}: {e}")
                 break
         
@@ -102,10 +242,21 @@ class ConnectionManager:
         with self.lock:
             if peer_id in self.connections:
                 conn = self.connections[peer_id]
+                if not conn.is_active:
+                    return False
                 try:
                     with conn.lock:
                         conn.socket.sendall(message)
+                    # Update last activity on successful send
+                    conn.last_activity = time.time()
                     return True
+                except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                    errno = getattr(e, 'winerror', getattr(e, 'errno', None))
+                    if errno in (10054, 10053, 10038):  # Windows connection errors
+                        self.logger.warning(f"Connection {peer_id} closed during send: {e}")
+                    else:
+                        self.logger.error(f"Failed to send message to {peer_id}: {e}")
+                    self.remove_connection(peer_id)
                 except Exception as e:
                     self.logger.error(f"Failed to send message to {peer_id}: {e}")
                     self.remove_connection(peer_id)

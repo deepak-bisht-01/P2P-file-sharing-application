@@ -37,7 +37,10 @@ class P2PCLI:
         
         # Initialize peer node
         self.peer_node = PeerNode(port=port, peer_id=self.identity.peer_id)
-        self.connection_manager = ConnectionManager(self._handle_incoming_message)
+        self.connection_manager = ConnectionManager(
+            message_handler=self._handle_incoming_message,
+            peer_id=self.identity.peer_id
+        )
         self.peer_node.connection_manager = self.connection_manager
         
 
