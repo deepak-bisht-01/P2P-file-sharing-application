@@ -174,12 +174,25 @@ class P2PService:
         # Mark peer as seen/online
         self.peer_registry.mark_peer_seen(sender_id)
         
-        # ConnectionManager should have already associated the connection when the message was received
-        # But let's verify and ensure it's properly associated
+        # Explicitly associate temp connection ID with real peer ID
+        # This is critical for Device 2 to show the connection as active
+        temp_id = f"{peer.address}:{peer.port}"
+        active_connections_before = set(self.connection_manager.get_active_connections())
+        logger.info(f"Before association, active connections: {[c[:8] for c in active_connections_before]}, temp_id: {temp_id[:8] if len(temp_id) > 8 else temp_id}")
+        
+        # Try to associate the temp ID with the real peer ID
+        # This ensures Device 2 properly tracks the connection
+        association_success = False
+        if temp_id in active_connections_before:
+            association_success = self.connection_manager.associate_temp_id_with_peer_id(temp_id, sender_id)
+            if association_success:
+                logger.info(f"Successfully associated temp_id {temp_id[:8]} with real_id {sender_id[:8]}")
+            else:
+                logger.warning(f"Failed to associate temp_id {temp_id[:8]} with real_id {sender_id[:8]}")
         
         # Wait a moment for connection association to complete
         import time
-        time.sleep(0.3)  # Give connection manager more time to associate the connection
+        time.sleep(0.2)  # Give connection manager time to complete association
         
         # Check if connection is active - try multiple ways to find it
         active_connections = set(self.connection_manager.get_active_connections())
@@ -192,10 +205,9 @@ class P2PService:
         
         if not connection_found:
             # Try to find it by address:port (temp ID format)
-            temp_id = f"{peer.address}:{peer.port}"
             if temp_id in active_connections:
                 temp_connection_id = temp_id
-                logger.info(f"Found connection by temp_id {temp_id[:8]}, will be associated with {sender_id[:8]}")
+                logger.info(f"Found connection by temp_id {temp_id[:8]}, will use it for response")
                 connection_found = True
             else:
                 # Check all active connections to see if any match by address/port
