@@ -41,20 +41,40 @@ async function fetchWithErrorHandling(
   } catch (error) {
     // Handle network errors (ERR_NETWORK_CHANGED, connection refused, etc.)
     if (error instanceof TypeError && error.message.includes("fetch")) {
+      // Check if it's a connection refused error
+      const errorMessage = error.message.toLowerCase();
+      if (errorMessage.includes("failed to fetch") || 
+          errorMessage.includes("networkerror") ||
+          errorMessage.includes("connection refused") ||
+          errorMessage.includes("err_connection_refused")) {
+        throw new Error(
+          `Connection refused: Cannot connect to backend server at ${API_BASE}. ` +
+          `Please ensure the backend server is running. Start it with: python start_api.py --api-port 8000`
+        );
+      }
       throw new Error(
         `Network error: Unable to connect to server. Please ensure the backend server is running at ${API_BASE}`
       );
     }
     if (error instanceof Error) {
       // Check for specific network error messages
-      if (error.message.includes("ERR_NETWORK_CHANGED")) {
+      const errorMessage = error.message.toLowerCase();
+      if (errorMessage.includes("err_network_changed")) {
         throw new Error(
           "Network connection changed. Please check your internet connection and ensure the server is still running."
         );
       }
-      if (error.message.includes("Failed to fetch") || error.message.includes("NetworkError")) {
+      if (errorMessage.includes("err_connection_refused") || 
+          errorMessage.includes("connection refused")) {
         throw new Error(
-          `Cannot reach server at ${API_BASE}. Is the backend server running?`
+          `Connection refused: Backend server is not running at ${API_BASE}. ` +
+          `Please start the server with: python start_api.py --api-port 8000`
+        );
+      }
+      if (errorMessage.includes("failed to fetch") || errorMessage.includes("networkerror")) {
+        throw new Error(
+          `Cannot reach server at ${API_BASE}. Is the backend server running? ` +
+          `Start it with: python start_api.py --api-port 8000`
         );
       }
     }

@@ -4,6 +4,60 @@ This document explains common errors you may encounter in the P2P file sharing a
 
 ## Network Errors
 
+### ERR_CONNECTION_REFUSED
+
+**What it means:**
+The `ERR_CONNECTION_REFUSED` error occurs when the browser tries to connect to the backend server, but the server is not running or not accepting connections on that port.
+
+**Common causes:**
+- **Backend server is not running**: The most common cause - you haven't started `start_api.py`
+- **Wrong port**: The frontend is trying to connect to a port that's not in use
+- **Server crashed**: The backend server stopped unexpectedly
+- **Firewall blocking**: A firewall is blocking the connection (less common for localhost)
+
+**How to fix:**
+
+1. **Start the backend server:**
+   ```bash
+   # From the project root directory
+   python start_api.py --api-port 8000
+   ```
+   
+   You should see:
+   ```
+   Starting P2P Messaging API server on 0.0.0.0:8000
+   P2P peer will listen on port 5000
+   ```
+
+2. **Verify the server is running:**
+   - Check the terminal where you started the server - it should show "Application startup complete"
+   - Test the connection manually:
+     ```bash
+     # On Windows PowerShell:
+     Test-NetConnection -ComputerName localhost -Port 8000
+     
+     # Or use curl:
+     curl http://localhost:8000/api/status
+     ```
+
+3. **Check the API URL:**
+   - Look at the footer of the web app - it shows the API endpoint
+   - If it shows `http://localhost:8000`, make sure the server is running on that port
+   - If using a different device, you may need to use the device's IP address instead of `localhost`
+
+4. **For multi-device setup:**
+   - Each device needs its own backend server running
+   - Or, if accessing from another device, use the server's IP address:
+     - Find the server's IP: `ipconfig` (Windows) or `ifconfig` (Linux/Mac)
+     - Update `VITE_API_BASE_URL` to use the IP: `http://<server-ip>:8000`
+     - Rebuild the frontend: `npm run build`
+
+**Error handling improvements:**
+The application now provides clearer error messages:
+- "Connection refused: Cannot connect to backend server at http://localhost:8000. Please ensure the backend server is running. Start it with: python start_api.py --api-port 8000"
+
+---
+
 ### ERR_NETWORK_CHANGED
 
 **What it means:**
@@ -95,6 +149,86 @@ A 400 Bad Request error on `/api/peers/connect` indicates that the connection at
 The application now provides more detailed error messages:
 - "Failed to connect to peer at 127.0.0.1:5001. Please ensure the peer is running and reachable, and that the host and port are correct."
 - "Connection error: [specific error]. Please check that the peer is running and accessible."
+
+**Multi-device scenarios:**
+- If connecting from Device 1 to Device 2, make sure:
+  1. Device 2's backend server is running
+  2. Device 2's peer node is running (on port 5000 or 5001)
+  3. You're using Device 2's actual IP address, not `localhost`
+  4. Firewall allows connections on the peer port
+
+---
+
+## Multi-Device Setup
+
+When running the application on multiple devices, each device needs proper configuration:
+
+### Setup for Device 1 (Server Device)
+
+1. **Start the backend server:**
+   ```bash
+   python start_api.py --api-port 8000 --port 5000
+   ```
+
+2. **Find the device's IP address:**
+   ```bash
+   # Windows:
+   ipconfig
+   # Look for IPv4 Address (e.g., 192.168.1.100)
+   
+   # Linux/Mac:
+   ifconfig
+   # or
+   ip addr show
+   ```
+
+3. **Note the IP address** - you'll need it for Device 2
+
+### Setup for Device 2 (Client Device)
+
+**Option A: Run backend on Device 2 (Recommended)**
+- Each device should run its own backend server
+- This allows each device to be both a client and a server
+- Start the server: `python start_api.py --api-port 8000 --port 5001` (use different port)
+
+**Option B: Connect to Device 1's backend**
+- If Device 2 should connect to Device 1's API:
+  1. Set environment variable before starting frontend:
+     ```bash
+     # Windows PowerShell:
+     $env:VITE_API_BASE_URL="http://<device1-ip>:8000"
+     npm run dev
+     
+     # Linux/Mac:
+     export VITE_API_BASE_URL="http://<device1-ip>:8000"
+     npm run dev
+     ```
+  2. Replace `<device1-ip>` with the actual IP address from Device 1
+
+### Connecting Peers Between Devices
+
+1. **Device 1** should connect to **Device 2's peer port** (default 5000 or 5001)
+2. **Device 2** should connect to **Device 1's peer port** (default 5000)
+3. Use the actual IP addresses, not `localhost` or `127.0.0.1`
+   - Example: Connect to `192.168.1.100:5000` instead of `127.0.0.1:5000`
+
+### Common Multi-Device Issues
+
+**Issue: Connection Refused on Device 2**
+- **Solution**: Start the backend server on Device 2, or configure Device 2 to use Device 1's IP address
+
+**Issue: 400 Bad Request when connecting peers**
+- **Solution**: 
+  - Ensure both devices have their backend servers running
+  - Use the correct IP addresses (not localhost)
+  - Check that peer ports (5000, 5001) are not blocked by firewall
+  - Verify the peer you're connecting to is actually running
+
+**Issue: Can't see peers from other device**
+- **Solution**:
+  - Make sure both devices are connected to the same network
+  - Check firewall settings allow connections on peer ports (5000, 5001)
+  - Verify both peers are running and connected
 
 ---
 
