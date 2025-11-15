@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   connectPeer,
   fetchFiles,
@@ -35,9 +35,14 @@ function usePolling<T>(
   const [data, setData] = useState<T | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const isInitialLoadRef = useRef(true);
 
   const fetchData = useCallback(async () => {
-    setLoading(true);
+    // Only show loading state on initial load, not on every refresh
+    const isInitial = isInitialLoadRef.current;
+    if (isInitial) {
+      setLoading(true);
+    }
     try {
       const result = await callback();
       setData(result);
@@ -45,7 +50,10 @@ function usePolling<T>(
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load data");
     } finally {
-      setLoading(false);
+      if (isInitial) {
+        setLoading(false);
+        isInitialLoadRef.current = false;
+      }
     }
   }, deps);
 
@@ -103,7 +111,7 @@ export default function App() {
     loading: transfersLoading,
     refresh: refreshTransfers,
     error: transfersError
-  } = usePolling<FileTransfer[]>(fetchTransfers, [], 2_000);
+  } = usePolling<FileTransfer[]>(fetchTransfers, [], 5_000);
 
   const handleConnect = useCallback(
     async (host: string, port: number) => {
