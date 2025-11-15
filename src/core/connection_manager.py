@@ -237,6 +237,13 @@ class ConnectionManager:
                                                     conn = self.connections[sender_id]
                                                     # Update the current_peer_id for this iteration
                                                     current_peer_id = sender_id
+                                                    self.logger.info(f"Connection successfully associated: {current_peer_id} -> {sender_id}")
+                                                else:
+                                                    self.logger.warning(f"Association completed but connection {sender_id} not found in connections dict")
+                                            else:
+                                                self.logger.warning(f"Failed to associate {current_peer_id} with {sender_id}")
+                                        else:
+                                            self.logger.warning(f"Connection {current_peer_id} not found or changed during association")
                             
                             # Use the updated sender_id for message handling
                             self.message_handler(sender_id, msg_json)

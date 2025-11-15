@@ -174,17 +174,50 @@ class P2PService:
         # Mark peer as seen/online
         self.peer_registry.mark_peer_seen(sender_id)
         
-        # ConnectionManager already associates temporary connection ids
-        # with real peer ids when the message is received; no need to
-        # attempt mapping here using the advertised address/port.
+        # ConnectionManager should have already associated the connection when the message was received
+        # But let's verify and ensure it's properly associated
         
         # Wait a moment for connection association to complete
         import time
-        time.sleep(0.2)  # Give connection manager time to associate the connection
+        time.sleep(0.3)  # Give connection manager more time to associate the connection
         
-        # Check if connection is active
+        # Check if connection is active - try multiple ways to find it
         active_connections = set(self.connection_manager.get_active_connections())
         logger.info(f"After handshake, active connections: {[c[:8] for c in active_connections]}, looking for {sender_id[:8]}")
+        
+        # Verify the connection is in active connections
+        # The connection might still be under a temp ID, so we need to find it
+        connection_found = sender_id in active_connections
+        temp_connection_id = None
+        
+        if not connection_found:
+            # Try to find it by address:port (temp ID format)
+            temp_id = f"{peer.address}:{peer.port}"
+            if temp_id in active_connections:
+                temp_connection_id = temp_id
+                logger.info(f"Found connection by temp_id {temp_id[:8]}, will be associated with {sender_id[:8]}")
+                connection_found = True
+            else:
+                # Check all active connections to see if any match by address/port
+                cm_state = self.connection_manager.dump_state()
+                for conn_info in cm_state.get("connections", []):
+                    conn_addr = conn_info.get("address", "")
+                    if ":" in conn_addr:
+                        addr, port_str = conn_addr.rsplit(":", 1)
+                        try:
+                            port = int(port_str)
+                            if addr == peer.address and port == peer.port and conn_info.get("is_active", False):
+                                conn_peer_id = conn_info.get("peer_id", "")
+                                if conn_peer_id in active_connections:
+                                    temp_connection_id = conn_peer_id
+                                    logger.info(f"Found matching connection {conn_peer_id[:8]} by address/port in dump_state")
+                                    connection_found = True
+                                    break
+                        except ValueError:
+                            pass
+                
+                if not connection_found:
+                    logger.warning(f"Connection for {sender_id[:8]} not found in active connections after handshake! Available: {[c[:8] for c in active_connections]}")
         
         # If this is a handshake response, we've completed the bidirectional handshake
         # If it's an initial handshake, send response and file manifests
@@ -193,16 +226,50 @@ class P2PService:
                 # This is a response to our handshake - connection is now fully established
                 logger.info(f"Handshake response received from {sender_id[:8]}, connection established")
                 # Send file manifests now that connection is confirmed
+                time.sleep(0.1)  # Small delay
                 self._send_all_manifests(sender_id)
             else:
                 # This is an initial handshake - send response and file manifests
                 logger.info(f"Initial handshake from {sender_id[:8]}, sending response and file manifests")
                 try:
-                    # Send handshake response first
-                    self._send_handshake(sender_id, is_response=True)
-                    logger.info(f"Sent handshake response to {sender_id[:8]}")
+                    # If we found a temp connection ID, use it to send the response
+                    # This ensures Device 2 can send the handshake response even if association isn't complete
+                    response_target = sender_id
+                    if temp_connection_id and sender_id not in active_connections:
+                        response_target = temp_connection_id
+                        logger.info(f"Using temp connection ID {temp_connection_id[:8]} to send handshake response")
+                    
+                    # Send handshake response first - this is critical for Device 2 to show connection
+                    # Try with the target we found
+                    response_sent = False
+                    if response_target in active_connections or temp_connection_id in active_connections:
+                        # Use the connection we found
+                        actual_target = response_target if response_target in active_connections else temp_connection_id
+                        payload = {
+                            "address": self._get_local_ip(),
+                            "port": self.port,
+                            "public_key": self.identity.get_public_key_string(),
+                            "handshake_response": True,
+                        }
+                        message = MessageProtocol.create_handshake(self.identity.peer_id, payload)
+                        response_sent = self.connection_manager.send_message(actual_target, message)
+                        if response_sent:
+                            logger.info(f"Sent handshake response to {actual_target[:8]} (using found connection)")
+                        else:
+                            logger.warning(f"Failed to send handshake response to {actual_target[:8]}")
+                    else:
+                        # Fall back to the normal method which will try to find the connection
+                        response_sent = self._send_handshake(sender_id, is_response=True)
+                    
+                    if response_sent:
+                        logger.info(f"Handshake response sent successfully to {sender_id[:8]}")
+                    else:
+                        logger.error(f"Failed to send handshake response to {sender_id[:8]} - connection may not be found")
+                    
+                    # Wait a bit more for the response to be processed and connection to be fully associated
+                    time.sleep(0.3)
+                    
                     # Then send file manifests
-                    time.sleep(0.1)  # Small delay between messages
                     self._send_all_manifests(sender_id)
                 except Exception as exc:
                     logger.error("Failed to send handshake response to %s: %s", sender_id[:8], exc, exc_info=True)
@@ -648,7 +715,7 @@ class P2PService:
         active_connections = set(self.connection_manager.get_active_connections())
         target_id = recipient_id
         
-        logger.debug(f"Attempting to send handshake to {recipient_id[:8]}. Active connections: {[c[:8] for c in active_connections]}")
+        logger.info(f"Attempting to send handshake to {recipient_id[:8]}. Active connections: {[c[:8] for c in active_connections]}")
         
         if recipient_id not in active_connections:
             # Try to find alternative connection ID
@@ -656,24 +723,72 @@ class P2PService:
             if peer:
                 if peer.peer_id in active_connections:
                     target_id = peer.peer_id
-                    logger.debug(f"Found connection by peer_id: {target_id[:8]}")
+                    logger.info(f"Found connection by peer_id: {target_id[:8]}")
                 else:
                     temp_id = f"{peer.address}:{peer.port}"
                     if temp_id in active_connections:
                         target_id = temp_id
-                        logger.debug(f"Found connection by temp_id: {target_id[:8]}")
+                        logger.info(f"Found connection by temp_id: {target_id[:8]}")
                     else:
                         # Try reverse lookup - find connection by address
                         for conn_id in active_connections:
                             conn_peer = self.peer_registry.get_peer(conn_id)
                             if conn_peer and conn_peer.address == peer.address and conn_peer.port == peer.port:
                                 target_id = conn_id
-                                logger.debug(f"Found connection by address match: {target_id[:8]}")
+                                logger.info(f"Found connection by address match: {target_id[:8]}")
                                 break
+                        # If still not found, try to find by matching any connection with same address
+                        if target_id not in active_connections:
+                            # Get connection manager's internal state to find by address
+                            cm_state = self.connection_manager.dump_state()
+                            for conn_info in cm_state.get("connections", []):
+                                conn_addr = conn_info.get("address", "")
+                                if ":" in conn_addr:
+                                    addr, port_str = conn_addr.rsplit(":", 1)
+                                    try:
+                                        port = int(port_str)
+                                        if addr == peer.address and port == peer.port:
+                                            # Find the peer_id for this connection
+                                            for cid in active_connections:
+                                                if cid in conn_info.get("peer_id", ""):
+                                                    target_id = cid
+                                                    logger.info(f"Found connection by address in connection state: {target_id[:8]}")
+                                                    break
+                                    except ValueError:
+                                        pass
         
         if target_id not in active_connections:
-            logger.warning(f"Cannot send handshake - {target_id[:8]} not in active connections: {[c[:8] for c in active_connections]}")
-            return False
+            # Last resort: try to find ANY connection that might match
+            # This is important for incoming connections that haven't been fully associated yet
+            cm_state = self.connection_manager.dump_state()
+            for conn_info in cm_state.get("connections", []):
+                conn_peer_id = conn_info.get("peer_id", "")
+                conn_addr = conn_info.get("address", "")
+                if conn_info.get("is_active", False):
+                    # Check if this connection's address matches the recipient's address
+                    if ":" in conn_addr:
+                        addr, port_str = conn_addr.rsplit(":", 1)
+                        try:
+                            port = int(port_str)
+                            peer = self.peer_registry.get_peer(recipient_id)
+                            if peer and addr == peer.address and port == peer.port:
+                                if conn_peer_id in active_connections:
+                                    target_id = conn_peer_id
+                                    logger.info(f"Found connection by address in dump_state: {target_id[:8]}")
+                                    break
+                        except ValueError:
+                            pass
+            
+            if target_id not in active_connections:
+                logger.warning(f"Cannot send handshake - {target_id[:8]} not in active connections: {[c[:8] for c in active_connections]}")
+                # Try one more time - use the first active connection if recipient_id matches any peer
+                peer = self.peer_registry.get_peer(recipient_id)
+                if peer and len(active_connections) == 1:
+                    # If there's only one connection and we're looking for a peer, use it
+                    target_id = list(active_connections)[0]
+                    logger.info(f"Using only active connection as fallback: {target_id[:8]}")
+                else:
+                    return False
         
         success = self.connection_manager.send_message(target_id, message)
         if success:
