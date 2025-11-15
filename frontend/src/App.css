@@ -333,6 +333,72 @@
   border-radius: 12px;
 }
 
+.message-entry--text {
+  background: rgba(30, 41, 59, 0.85);
+}
+
+.message-content {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.message-text {
+  font-size: 1rem;
+  line-height: 1.5;
+  color: rgba(226, 232, 240, 0.95);
+  padding: 0.75rem;
+  background: rgba(15, 23, 42, 0.55);
+  border-radius: 12px;
+  word-wrap: break-word;
+}
+
+.message-system {
+  font-size: 0.9rem;
+  color: rgba(148, 163, 184, 0.9);
+  padding: 0.5rem 0.75rem;
+  background: rgba(15, 23, 42, 0.4);
+  border-radius: 8px;
+  font-style: italic;
+}
+
+.message-meta {
+  font-size: 0.75rem;
+  color: rgba(148, 163, 184, 0.65);
+  padding-top: 0.25rem;
+}
+
+.message-type {
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: rgba(148, 163, 184, 0.7);
+  font-weight: 600;
+}
+
+.message-details {
+  margin-top: 0.5rem;
+}
+
+.message-details summary {
+  cursor: pointer;
+  font-size: 0.85rem;
+  color: rgba(148, 163, 184, 0.8);
+  padding: 0.5rem;
+  border-radius: 8px;
+  background: rgba(15, 23, 42, 0.4);
+  user-select: none;
+}
+
+.message-details summary:hover {
+  background: rgba(15, 23, 42, 0.6);
+}
+
+.message-details pre {
+  margin-top: 0.5rem;
+  font-size: 0.8rem;
+}
+
 .card--files h3 {
   margin: 0;
   font-size: 1rem;

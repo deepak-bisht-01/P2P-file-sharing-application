@@ -129,8 +129,18 @@ class P2PService:
                 self._handle_text_message(message_dict)
             elif msg_type == MessageType.PING.value:
                 self._handle_ping(message_dict)
+                # Don't record ping/pong in message log - they're just keepalive
+                return
+            elif msg_type == MessageType.PONG.value:
+                # Don't record pong messages either
+                return
             elif msg_type == MessageType.FILE_MANIFEST.value:
                 self._handle_file_manifest(message_dict)
+                # Don't record file manifests in message log - they show up in file list
+                return
+            elif msg_type == MessageType.HANDSHAKE.value:
+                # Handshake is already handled, don't record in message log
+                return
             elif msg_type == MessageType.FILE_CHUNK_REQUEST.value:
                 self._handle_file_chunk_request(message_dict)
             elif msg_type == MessageType.FILE_CHUNK.value:
@@ -210,6 +220,7 @@ class P2PService:
             "payload": message,
             "received_at": datetime.utcnow().isoformat()
         })
+        logger.info(f"Recorded incoming text message in log (total messages: {len(self.messages)})")
 
     def _handle_ping(self, message: Dict):
         pong = MessageProtocol.create_message(
@@ -226,6 +237,9 @@ class P2PService:
         try:
             wire_format = message.to_wire_format()
             encoded = MessageProtocol.encode_message(wire_format)
+            
+            msg_type = wire_format.get("type", "unknown")
+            logger.info(f"Processing {msg_type} message to send. Recipient: {message.recipient_id or 'BROADCAST'}")
 
             if message.recipient_id:
                 target_id = message.recipient_id
@@ -280,14 +294,46 @@ class P2PService:
                             except Exception:
                                 pass
                 
-                # Final check - if still not in active, log warning
+                # Final check - if still not in active, try one more time with all active connections
                 if target_id not in active:
-                    logger.warning("Target %s not in active connections: %s. Available: %s", 
-                                 target_id[:8] if len(target_id) > 8 else target_id, 
-                                 list(active)[:5],
-                                 [p.peer_id[:8] for p in self.peer_registry.get_all_peers()][:5])
-                else:
-                    logger.info("Sending message to %s (connection found)", target_id[:8] if len(target_id) > 8 else target_id)
+                    # Try to find by matching peer registry entries
+                    found_match = False
+                    for conn_id in active:
+                        conn_peer = self.peer_registry.get_peer(conn_id)
+                        if conn_peer:
+                            # Check if this connection matches our target by peer_id
+                            if conn_peer.peer_id == target_id:
+                                target_id = conn_id
+                                logger.info(f"Found connection match by peer_id: {target_id[:8]}")
+                                found_match = True
+                                break
+                            # Or by address:port
+                            elif conn_peer.address and conn_peer.port and f"{conn_peer.address}:{conn_peer.port}" == target_id:
+                                target_id = conn_id
+                                logger.info(f"Found connection match by address:port: {target_id[:8]}")
+                                found_match = True
+                                break
+                    
+                    if not found_match and target_id not in active:
+                        # Last resort: try reverse lookup - find any connection that might match
+                        target_peer = self.peer_registry.get_peer(target_id)
+                        if target_peer:
+                            for conn_id in active:
+                                conn_peer = self.peer_registry.get_peer(conn_id)
+                                if conn_peer and conn_peer.address == target_peer.address and conn_peer.port == target_peer.port:
+                                    target_id = conn_id
+                                    logger.info(f"Found connection match by address/port reverse lookup: {target_id[:8]}")
+                                    found_match = True
+                                    break
+                    
+                    if not found_match and target_id not in active:
+                        logger.warning("Target %s not in active connections: %s. Available: %s", 
+                                     target_id[:8] if len(target_id) > 8 else target_id, 
+                                     [c[:8] for c in list(active)[:5]],
+                                     [p.peer_id[:8] for p in self.peer_registry.get_all_peers()][:5])
+                        return  # Don't try to send if connection not found
+                
+                logger.info("Sending message to %s (connection found)", target_id[:8] if len(target_id) > 8 else target_id)
                 
                 success = self.connection_manager.send_message(target_id, encoded)
                 if not success:
@@ -295,15 +341,27 @@ class P2PService:
                 else:
                     logger.info("Message sent successfully to %s", target_id[:8] if len(target_id) > 8 else target_id)
             else:
+                # Broadcast message
                 active = self.connection_manager.get_active_connections()
+                logger.info(f"Broadcasting message to {len(active)} active connection(s)")
                 if not active:
+                    logger.warning("No active connections for broadcast, attempting to connect to known peers")
                     for peer in self.peer_registry.get_online_peers():
                         if peer.peer_id != self.identity.peer_id:
                             try:
                                 self.connect_to_peer(peer.address, peer.port)
-                            except Exception:
-                                pass
-                self.connection_manager.broadcast_message(encoded)
+                                import time
+                                time.sleep(0.2)
+                            except Exception as exc:
+                                logger.warning(f"Failed to connect to peer {peer.peer_id[:8]}: {exc}")
+                    active = self.connection_manager.get_active_connections()
+                    logger.info(f"After connection attempts, {len(active)} active connection(s)")
+                
+                if active:
+                    self.connection_manager.broadcast_message(encoded)
+                    logger.info(f"Broadcast message sent to {len(active)} peer(s)")
+                else:
+                    logger.warning("No active connections available for broadcast")
 
             self._record_message({
                 "direction": "outgoing",
@@ -412,6 +470,27 @@ class P2PService:
     def send_text_message(self, recipient_id: str, text: str) -> bool:
         import uuid
 
+        # Check if recipient is in active connections first
+        active_connections = set(self.connection_manager.get_active_connections())
+        logger.info(f"Preparing to send text message to {recipient_id[:8]}. Active connections: {[c[:8] for c in active_connections]}")
+        
+        # If recipient_id is not in active connections, try to find it
+        if recipient_id not in active_connections:
+            peer = self.peer_registry.get_peer(recipient_id)
+            if peer:
+                # Try peer_id
+                if peer.peer_id in active_connections:
+                    recipient_id = peer.peer_id
+                    logger.info(f"Found connection by peer_id: {recipient_id[:8]}")
+                else:
+                    # Try temp address:port
+                    temp_id = f"{peer.address}:{peer.port}"
+                    if temp_id in active_connections:
+                        recipient_id = temp_id
+                        logger.info(f"Found connection by temp_id: {recipient_id[:8]}")
+                    else:
+                        logger.warning(f"Recipient {recipient_id[:8]} not in active connections. Will attempt to connect.")
+        
         message = Message(
             message_id=str(uuid.uuid4()),
             sender_id=self.identity.peer_id,
@@ -421,7 +500,12 @@ class P2PService:
         )
         
         logger.info("Queuing text message to %s: %s", recipient_id[:8] if len(recipient_id) > 8 else recipient_id, text[:50])
-        return self.message_queue.put_message(message)
+        result = self.message_queue.put_message(message)
+        if result:
+            logger.info(f"Text message queued successfully")
+        else:
+            logger.error(f"Failed to queue text message")
+        return result
 
     def broadcast_text_message(self, text: str) -> bool:
         import uuid
@@ -487,7 +571,11 @@ class P2PService:
     def _handle_file_manifest(self, message: Dict):
         sender_id = message["sender_id"]
         manifest = message.get("content", {})
+        file_id = manifest.get("file_id", "unknown")
+        file_name = manifest.get("file_name", "unknown")
+        logger.info(f"Received file manifest from {sender_id[:8]}: {file_name} (file_id: {file_id[:8]})")
         self.file_manager.register_remote_manifest(sender_id, manifest)
+        logger.info(f"Registered remote file: {file_name} from {sender_id[:8]}")
 
     def _handle_file_chunk_request(self, message: Dict):
         sender_id = message["sender_id"]
