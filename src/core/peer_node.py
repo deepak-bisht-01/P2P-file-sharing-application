@@ -56,16 +56,34 @@ class PeerNode:
         """Accept incoming connections"""
         while self.is_running:
             try:
-                client_socket, address = self.server_socket.accept()
-                self.logger.info(f"New connection from {address}")
-                
-                # ✅ Hand off to connection manager
-                if self.connection_manager:
-                    self.connection_manager.add_connection(client_socket, address)
+                # Set timeout on server socket to allow checking is_running periodically
+                if self.server_socket:
+                    self.server_socket.settimeout(1.0)  # 1 second timeout
+                    client_socket, address = self.server_socket.accept()
+                    self.logger.info(f"New incoming connection from {address}")
                     
+                    # ✅ Hand off to connection manager
+                    if self.connection_manager:
+                        self.connection_manager.add_connection(client_socket, address)
+                    else:
+                        self.logger.warning("Connection manager not available, closing connection")
+                        try:
+                            client_socket.close()
+                        except:
+                            pass
+            except socket.timeout:
+                # Timeout is expected - just continue the loop to check is_running
+                continue
+            except OSError as e:
+                # Socket errors (like closed socket) - only log if we're still running
+                if self.is_running:
+                    errno = getattr(e, 'winerror', getattr(e, 'errno', None))
+                    if errno not in (10038, 10004):  # Windows: not a socket, interrupted
+                        self.logger.error(f"Socket error accepting connection: {e}")
+                break  # Exit loop if socket is closed
             except Exception as e:
                 if self.is_running:
-                    self.logger.error(f"Error accepting connection: {e}")
+                    self.logger.error(f"Error accepting connection: {e}", exc_info=True)
     
     def connect_to_peer(self, target_host: str, target_port: int) -> Optional[socket.socket]:
         """Connect to another peer"""

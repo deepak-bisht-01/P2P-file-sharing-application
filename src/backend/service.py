@@ -151,7 +151,9 @@ class P2PService:
     def _handle_handshake(self, message: Dict):
         sender_id = message["sender_id"]
         peer_info = message.get("content", {})
-        logger.info(f"Received handshake from {sender_id}: {peer_info}")
+        is_response = peer_info.get("handshake_response", False)
+        logger.info(f"Received handshake from {sender_id}: {peer_info} (is_response={is_response})")
+        
         peer = Peer(
             peer_id=sender_id,
             address=peer_info.get("address", "unknown"),
@@ -163,19 +165,26 @@ class P2PService:
         # with real peer ids when the message is received; no need to
         # attempt mapping here using the advertised address/port.
         
-        # Send file manifests to the newly connected peer
-        # Use a small delay to ensure connection is fully associated
-        import time
-        time.sleep(0.1)
-        self._send_all_manifests(sender_id)
-        
-        # Send handshake response if this is not a response itself
-        if sender_id != self.identity.peer_id and not peer_info.get("handshake_response"):
-            try:
-                self._send_handshake(sender_id, is_response=True)
-                logger.info(f"Sent handshake response to {sender_id[:8]}")
-            except Exception as exc:
-                logger.error("Failed to send handshake response to %s: %s", sender_id[:8], exc)
+        # If this is a handshake response, we've completed the bidirectional handshake
+        # If it's an initial handshake, send response and file manifests
+        if sender_id != self.identity.peer_id:
+            if is_response:
+                # This is a response to our handshake - connection is now fully established
+                logger.info(f"Handshake response received from {sender_id[:8]}, connection established")
+                # Send file manifests now that connection is confirmed
+                import time
+                time.sleep(0.1)  # Small delay to ensure connection is fully associated
+                self._send_all_manifests(sender_id)
+            else:
+                # This is an initial handshake - send response and file manifests
+                import time
+                time.sleep(0.1)  # Small delay to ensure connection is fully associated
+                self._send_all_manifests(sender_id)
+                try:
+                    self._send_handshake(sender_id, is_response=True)
+                    logger.info(f"Sent handshake response to {sender_id[:8]}")
+                except Exception as exc:
+                    logger.error("Failed to send handshake response to %s: %s", sender_id[:8], exc)
 
     def _handle_text_message(self, message: Dict):
         """Handle incoming text message"""

@@ -215,12 +215,17 @@ class ConnectionManager:
                             current_peer_id = conn.peer_id
                             if sender_id != current_peer_id:
                                 # Check if sender_id looks like a real peer_id (not address:port)
-                                is_real_peer_id = ':' not in sender_id or len(sender_id) > 50
+                                # Real peer_ids are typically UUIDs or long strings, not simple address:port
+                                is_real_peer_id = (':' not in sender_id) or (len(sender_id) > 50)
                                 # Also associate if conn.peer_id looks like temp (address:port format)
                                 is_temp_id = ':' in current_peer_id and len(current_peer_id) < 50
                                 
-                                if is_real_peer_id or (is_temp_id and sender_id != current_peer_id):
-                                    self.logger.info(f"Associating temp id {current_peer_id} with sender_id {sender_id} from message")
+                                # Always associate if we have a temp ID and receive a real peer_id
+                                # Also associate if both are real peer_ids but different (shouldn't happen, but handle it)
+                                should_associate = (is_temp_id and is_real_peer_id) or (is_real_peer_id and sender_id != current_peer_id)
+                                
+                                if should_associate:
+                                    self.logger.info(f"Associating connection {current_peer_id} with sender_id {sender_id} from message type {msg_dict.get('type', 'unknown')}")
                                     # Use a lock-safe association
                                     with self.lock:
                                         # Re-check after acquiring lock - connection might have been removed
@@ -230,6 +235,8 @@ class ConnectionManager:
                                                 # Update our reference if it exists
                                                 if sender_id in self.connections:
                                                     conn = self.connections[sender_id]
+                                                    # Update the current_peer_id for this iteration
+                                                    current_peer_id = sender_id
                             
                             # Use the updated sender_id for message handling
                             self.message_handler(sender_id, msg_json)
