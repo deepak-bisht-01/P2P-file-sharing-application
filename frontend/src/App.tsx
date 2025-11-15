@@ -119,6 +119,9 @@ export default function App() {
       try {
         await connectPeer(host, port);
         await Promise.all([refreshPeers(), refreshStatus()]);
+      } catch (error) {
+        // Re-throw error so ConnectPeerForm can display it
+        throw error;
       } finally {
         setIsConnecting(false);
       }

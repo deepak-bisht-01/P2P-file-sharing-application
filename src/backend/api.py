@@ -82,10 +82,23 @@ def get_connected_peers():
 
 @app.post("/api/peers/connect")
 def connect_peer(request: ConnectRequest):
-    success = get_p2p_service().connect_to_peer(request.host, request.port)
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to connect to peer")
-    return {"status": "connected"}
+    try:
+        success = get_p2p_service().connect_to_peer(request.host, request.port)
+        if not success:
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Failed to connect to peer at {request.host}:{request.port}. "
+                       f"Please ensure the peer is running and reachable, and that the host and port are correct."
+            )
+        return {"status": "connected"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error connecting to peer {request.host}:{request.port}: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=400,
+            detail=f"Connection error: {str(e)}. Please check that the peer is running and accessible."
+        )
 
 
 @app.post("/api/messages")
