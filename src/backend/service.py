@@ -162,10 +162,18 @@ class P2PService:
         # ConnectionManager already associates temporary connection ids
         # with real peer ids when the message is received; no need to
         # attempt mapping here using the advertised address/port.
+        
+        # Send file manifests to the newly connected peer
+        # Use a small delay to ensure connection is fully associated
+        import time
+        time.sleep(0.1)
         self._send_all_manifests(sender_id)
+        
+        # Send handshake response if this is not a response itself
         if sender_id != self.identity.peer_id and not peer_info.get("handshake_response"):
             try:
                 self._send_handshake(sender_id, is_response=True)
+                logger.info(f"Sent handshake response to {sender_id[:8]}")
             except Exception as exc:
                 logger.error("Failed to send handshake response to %s: %s", sender_id[:8], exc)
 
@@ -175,6 +183,13 @@ class P2PService:
         content = message.get("content", {})
         text = content.get("text", "")
         logger.info("Received text message from %s: %s", sender_id[:8] if len(sender_id) > 8 else sender_id, text[:50])
+        
+        # Record the message so it appears in the message log
+        self._record_message({
+            "direction": "incoming",
+            "payload": message,
+            "received_at": datetime.utcnow().isoformat()
+        })
 
     def _handle_ping(self, message: Dict):
         pong = MessageProtocol.create_message(
@@ -409,10 +424,45 @@ class P2PService:
     # File transfer helpers
     # ------------------------------------------------------------------
     def _send_all_manifests(self, recipient_id: str):
+        """Send all local file manifests to a peer"""
         manifests = self.file_manager.list_local_files()
+        if not manifests:
+            logger.debug(f"No local files to send to {recipient_id[:8]}")
+            return
+        
+        active_connections = set(self.connection_manager.get_active_connections())
+        logger.info(f"Sending {len(manifests)} file manifest(s) to {recipient_id[:8]}. Active connections: {[c[:8] for c in active_connections]}")
+        
+        # Check if recipient_id is in active connections, try alternatives if not
+        target_id = recipient_id
+        if recipient_id not in active_connections:
+            # Try to find by peer registry
+            peer = self.peer_registry.get_peer(recipient_id)
+            if peer:
+                # Try peer_id first
+                if peer.peer_id in active_connections:
+                    target_id = peer.peer_id
+                else:
+                    # Try temp address:port format
+                    temp_id = f"{peer.address}:{peer.port}"
+                    if temp_id in active_connections:
+                        target_id = temp_id
+                    else:
+                        logger.warning(f"Recipient {recipient_id[:8]} not in active connections. Available: {[c[:8] for c in active_connections]}")
+                        return
+            else:
+                logger.warning(f"Recipient {recipient_id[:8]} not found in peer registry and not in active connections")
+                return
+        
+        sent_count = 0
         for manifest in manifests:
             msg = MessageProtocol.create_file_manifest(self.identity.peer_id, manifest)
-            self.connection_manager.send_message(recipient_id, msg)
+            if self.connection_manager.send_message(target_id, msg):
+                sent_count += 1
+            else:
+                logger.warning(f"Failed to send file manifest for {manifest.get('file_id', 'unknown')[:8]} to {target_id[:8]}")
+        
+        logger.info(f"Sent {sent_count}/{len(manifests)} file manifest(s) to {target_id[:8]}")
 
     def _handle_file_manifest(self, message: Dict):
         sender_id = message["sender_id"]
@@ -485,7 +535,27 @@ class P2PService:
             "handshake_response": is_response,
         }
         message = MessageProtocol.create_handshake(self.identity.peer_id, payload)
-        self.connection_manager.send_message(recipient_id, message)
+        
+        # Try to send using recipient_id, but also try alternatives if it fails
+        active_connections = set(self.connection_manager.get_active_connections())
+        target_id = recipient_id
+        
+        if recipient_id not in active_connections:
+            # Try to find alternative connection ID
+            peer = self.peer_registry.get_peer(recipient_id)
+            if peer:
+                if peer.peer_id in active_connections:
+                    target_id = peer.peer_id
+                else:
+                    temp_id = f"{peer.address}:{peer.port}"
+                    if temp_id in active_connections:
+                        target_id = temp_id
+        
+        success = self.connection_manager.send_message(target_id, message)
+        if success:
+            logger.info(f"Sent handshake to {target_id[:8]} (is_response={is_response})")
+        else:
+            logger.warning(f"Failed to send handshake to {target_id[:8]}. Active connections: {[c[:8] for c in active_connections]}")
 
     def _ensure_peers_connected_for_file(self, file_id: str, peer_ids):
         target_peers = {peer for peer in peer_ids if peer and peer != self.identity.peer_id}
