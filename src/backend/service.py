@@ -152,7 +152,7 @@ class P2PService:
         sender_id = message["sender_id"]
         peer_info = message.get("content", {})
         is_response = peer_info.get("handshake_response", False)
-        logger.info(f"Received handshake from {sender_id}: {peer_info} (is_response={is_response})")
+        logger.info(f"Received handshake from {sender_id[:8]}: address={peer_info.get('address')}, port={peer_info.get('port')}, is_response={is_response}")
         
         peer = Peer(
             peer_id=sender_id,
@@ -161,9 +161,20 @@ class P2PService:
             public_key=peer_info.get("public_key")
         )
         self.peer_registry.register_peer(peer)
+        # Mark peer as seen/online
+        self.peer_registry.mark_peer_seen(sender_id)
+        
         # ConnectionManager already associates temporary connection ids
         # with real peer ids when the message is received; no need to
         # attempt mapping here using the advertised address/port.
+        
+        # Wait a moment for connection association to complete
+        import time
+        time.sleep(0.2)  # Give connection manager time to associate the connection
+        
+        # Check if connection is active
+        active_connections = set(self.connection_manager.get_active_connections())
+        logger.info(f"After handshake, active connections: {[c[:8] for c in active_connections]}, looking for {sender_id[:8]}")
         
         # If this is a handshake response, we've completed the bidirectional handshake
         # If it's an initial handshake, send response and file manifests
@@ -172,19 +183,19 @@ class P2PService:
                 # This is a response to our handshake - connection is now fully established
                 logger.info(f"Handshake response received from {sender_id[:8]}, connection established")
                 # Send file manifests now that connection is confirmed
-                import time
-                time.sleep(0.1)  # Small delay to ensure connection is fully associated
                 self._send_all_manifests(sender_id)
             else:
                 # This is an initial handshake - send response and file manifests
-                import time
-                time.sleep(0.1)  # Small delay to ensure connection is fully associated
-                self._send_all_manifests(sender_id)
+                logger.info(f"Initial handshake from {sender_id[:8]}, sending response and file manifests")
                 try:
+                    # Send handshake response first
                     self._send_handshake(sender_id, is_response=True)
                     logger.info(f"Sent handshake response to {sender_id[:8]}")
+                    # Then send file manifests
+                    time.sleep(0.1)  # Small delay between messages
+                    self._send_all_manifests(sender_id)
                 except Exception as exc:
-                    logger.error("Failed to send handshake response to %s: %s", sender_id[:8], exc)
+                    logger.error("Failed to send handshake response to %s: %s", sender_id[:8], exc, exc_info=True)
 
     def _handle_text_message(self, message: Dict):
         """Handle incoming text message"""
@@ -549,22 +560,39 @@ class P2PService:
         active_connections = set(self.connection_manager.get_active_connections())
         target_id = recipient_id
         
+        logger.debug(f"Attempting to send handshake to {recipient_id[:8]}. Active connections: {[c[:8] for c in active_connections]}")
+        
         if recipient_id not in active_connections:
             # Try to find alternative connection ID
             peer = self.peer_registry.get_peer(recipient_id)
             if peer:
                 if peer.peer_id in active_connections:
                     target_id = peer.peer_id
+                    logger.debug(f"Found connection by peer_id: {target_id[:8]}")
                 else:
                     temp_id = f"{peer.address}:{peer.port}"
                     if temp_id in active_connections:
                         target_id = temp_id
+                        logger.debug(f"Found connection by temp_id: {target_id[:8]}")
+                    else:
+                        # Try reverse lookup - find connection by address
+                        for conn_id in active_connections:
+                            conn_peer = self.peer_registry.get_peer(conn_id)
+                            if conn_peer and conn_peer.address == peer.address and conn_peer.port == peer.port:
+                                target_id = conn_id
+                                logger.debug(f"Found connection by address match: {target_id[:8]}")
+                                break
+        
+        if target_id not in active_connections:
+            logger.warning(f"Cannot send handshake - {target_id[:8]} not in active connections: {[c[:8] for c in active_connections]}")
+            return False
         
         success = self.connection_manager.send_message(target_id, message)
         if success:
             logger.info(f"Sent handshake to {target_id[:8]} (is_response={is_response})")
         else:
-            logger.warning(f"Failed to send handshake to {target_id[:8]}. Active connections: {[c[:8] for c in active_connections]}")
+            logger.warning(f"Failed to send handshake to {target_id[:8]}. Connection may be closed.")
+        return success
 
     def _ensure_peers_connected_for_file(self, file_id: str, peer_ids):
         target_peers = {peer for peer in peer_ids if peer and peer != self.identity.peer_id}
