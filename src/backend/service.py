@@ -332,18 +332,29 @@ class P2PService:
         sock = self.peer_node.connect_to_peer(host, port)
         if not sock:
             return False
+        
         # The PeerNode already registers the connection with ConnectionManager.
         # Use the socket local address as the advertised address in the handshake
         try:
             local_addr = sock.getsockname()[0]
         except Exception:
-            local_addr = "localhost"
+            local_addr = self._get_local_ip()
 
         temp_peer_id = f"{host}:{port}"
+        
+        # Small delay to ensure connection is fully registered
+        import time
+        time.sleep(0.1)
 
         # send handshake using the temp id assigned for the connection
-        self._send_handshake(temp_peer_id, advertised_address=local_addr)
+        # The handshake will be processed and the temp_id will be associated with real peer_id
+        try:
+            self._send_handshake(temp_peer_id, advertised_address=local_addr)
+        except Exception as e:
+            logger.warning(f"Failed to send handshake to {temp_peer_id}: {e}")
+            # Don't fail the connection if handshake send fails - it might still work
 
+        # Register temp peer (will be updated when real handshake arrives)
         peer = Peer(
             peer_id=temp_peer_id,
             address=host,

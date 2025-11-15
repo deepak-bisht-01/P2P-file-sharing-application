@@ -77,9 +77,8 @@ class PeerNode:
             except Exception:
                 pass
             peer_socket.connect((target_host, target_port))
-            # Switch back to blocking mode once the connection succeeds so we
-            # don't get spurious timeouts while waiting for messages.
-            peer_socket.settimeout(None)
+            # Don't set timeout to None here - let connection_manager set it properly
+            # This ensures consistent timeout handling
             self.logger.info(f"Connected to peer at {target_host}:{target_port}")
             
             # ✅ Add connection into manager
