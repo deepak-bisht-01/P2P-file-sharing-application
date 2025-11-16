@@ -1,7 +1,7 @@
 from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, validator
 from typing import Optional
 import logging
 import threading
@@ -37,7 +37,7 @@ def get_p2p_service():
 
 class ConnectRequest(BaseModel):
     host: str
-    port: int
+    port: int = Field(..., ge=1, le=65535)  # Valid port range: 1-65535
 
 
 class MessageRequest(BaseModel):
