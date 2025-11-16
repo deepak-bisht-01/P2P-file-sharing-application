@@ -116,31 +116,48 @@ class ConnectionManager:
                     self.logger.debug(f"Socket already registered with peer_id {existing_peer_id}")
                     return
             
-            # Check if we have an existing connection to the same address with the same peer_id
-            # Only replace if it's the same peer_id (reconnection scenario), not for bidirectional connections
+            # Check if we have an existing connection to the same address
+            # For bidirectional connections, we may have different addresses (different ports)
+            # so we need to check if this is the same socket or a different connection
             if address in self.address_to_peer:
                 old_peer_id = self.address_to_peer[address]
                 if old_peer_id in self.connections:
                     existing_conn = self.connections[old_peer_id]
-                    # Only replace if it's the same peer_id AND different socket (reconnection)
-                    # If it's a different peer_id, allow both (bidirectional connection)
-                    if existing_conn.socket != sock:
-                        if old_peer_id == peer_id:
-                            # Same peer_id, different socket = reconnection, replace old one
-                            self.logger.info(f"Replacing existing connection from {address} (reconnection: {old_peer_id})")
-                            existing_conn.is_active = False
-                            try:
-                                existing_conn.socket.close()
-                            except:
-                                pass
-                            del self.connections[old_peer_id]
-                            del self.address_to_peer[address]
-                        else:
-                            # Different peer_id = bidirectional connection, use unique key
-                            # Create unique peer_id that includes socket identifier
-                            unique_peer_id = f"{peer_id}-fd{sock_fd}"
-                            peer_id = unique_peer_id
-                            self.logger.info(f"Bidirectional connection detected: {address} -> {old_peer_id} and {unique_peer_id}")
+                    # If it's the same socket, we've already handled it above
+                    if existing_conn.socket == sock:
+                        return
+                    
+                    # Different socket to the same address - could be reconnection or bidirectional
+                    # Check if it's the same peer_id (reconnection) or different (bidirectional)
+                    if old_peer_id == peer_id:
+                        # Same peer_id, different socket = reconnection, replace old one
+                        self.logger.info(f"Replacing existing connection from {address} (reconnection: {old_peer_id})")
+                        existing_conn.is_active = False
+                        try:
+                            existing_conn.socket.close()
+                        except:
+                            pass
+                        del self.connections[old_peer_id]
+                        del self.address_to_peer[address]
+                    else:
+                        # Different peer_id = likely bidirectional connection, use unique key
+                        # Create unique peer_id that includes socket identifier
+                        unique_peer_id = f"{peer_id}-fd{sock_fd}"
+                        peer_id = unique_peer_id
+                        self.logger.info(f"Bidirectional connection detected: {address} -> {old_peer_id} and {unique_peer_id}")
+            else:
+                # New address - check if we already have a connection to the same IP but different port
+                # This handles bidirectional connections where addresses differ by port
+                same_ip_connections = [
+                    (pid, conn) for pid, conn in self.connections.items()
+                    if conn.address[0] == address[0] and conn.socket != sock
+                ]
+                if same_ip_connections:
+                    # We have connections to the same IP - this might be bidirectional
+                    # Use unique peer_id to distinguish
+                    unique_peer_id = f"{peer_id}-fd{sock_fd}"
+                    peer_id = unique_peer_id
+                    self.logger.info(f"Multiple connections to {address[0]} detected, using unique ID: {unique_peer_id}")
             
             # Check if peer_id already exists with different socket
             if peer_id in self.connections:
@@ -164,12 +181,15 @@ class ConnectionManager:
         
             conn = Connection(sock, address, peer_id)
             self.connections[peer_id] = conn
-            # Only update address_to_peer if this is the primary connection (not a bidirectional one)
-            # For bidirectional connections, we track by unique peer_id
-            if address not in self.address_to_peer or not any(
-                c.socket != sock and c.address == address 
-                for c in self.connections.values()
-            ):
+            # For bidirectional connections, we may have multiple connections to the same peer
+            # but with different addresses (different ports). We should allow multiple address mappings.
+            # Only update if this address isn't already mapped, or if it's mapped to a different connection
+            if address not in self.address_to_peer:
+                self.address_to_peer[address] = peer_id
+            elif self.address_to_peer[address] != peer_id:
+                # Same address but different peer_id - this can happen with bidirectional connections
+                # where we have different ports. Keep the new mapping.
+                self.logger.debug(f"Updating address mapping for {address}: {self.address_to_peer[address]} -> {peer_id}")
                 self.address_to_peer[address] = peer_id
 
         # ✅ also register the peer (outside lock to avoid deadlock)
