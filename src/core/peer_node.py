@@ -89,23 +89,44 @@ class PeerNode:
         """Connect to another peer"""
         try:
             peer_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            peer_socket.settimeout(5)
+            # Increased timeout to 10 seconds for better reliability on slow networks
+            peer_socket.settimeout(10)
             try:
                 peer_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             except Exception:
                 pass
+            self.logger.info(f"Attempting to connect to peer at {target_host}:{target_port}")
             peer_socket.connect((target_host, target_port))
             # Don't set timeout to None here - let connection_manager set it properly
             # This ensures consistent timeout handling
-            self.logger.info(f"Connected to peer at {target_host}:{target_port}")
+            self.logger.info(f"Successfully connected to peer at {target_host}:{target_port}")
             
             # ✅ Add connection into manager
             if self.connection_manager:
                 self.connection_manager.add_connection(peer_socket, (target_host, target_port))
             
             return peer_socket
+        except socket.timeout:
+            error_msg = f"Connection timeout to {target_host}:{target_port} (10s). Peer may be unreachable or firewall is blocking."
+            self.logger.error(error_msg)
+            return None
+        except ConnectionRefusedError:
+            error_msg = f"Connection refused by {target_host}:{target_port}. Peer may not be running on that port."
+            self.logger.error(error_msg)
+            return None
+        except OSError as e:
+            errno = getattr(e, 'winerror', getattr(e, 'errno', None))
+            if errno == 10051:  # Windows: network unreachable
+                error_msg = f"Network unreachable: Cannot reach {target_host}:{target_port}. Check IP address and network connectivity."
+            elif errno == 10060:  # Windows: connection timeout
+                error_msg = f"Connection timeout to {target_host}:{target_port}. Check firewall settings."
+            else:
+                error_msg = f"Network error connecting to {target_host}:{target_port}: {e}"
+            self.logger.error(error_msg)
+            return None
         except Exception as e:
-            self.logger.error(f"Failed to connect to peer: {e}")
+            error_msg = f"Failed to connect to peer at {target_host}:{target_port}: {e}"
+            self.logger.error(error_msg, exc_info=True)
             return None
     
     def stop(self):

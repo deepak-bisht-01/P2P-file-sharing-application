@@ -83,21 +83,39 @@ def get_connected_peers():
 @app.post("/api/peers/connect")
 def connect_peer(request: ConnectRequest):
     try:
-        success = get_p2p_service().connect_to_peer(request.host, request.port)
+        # Validate host and port
+        if not request.host or not request.host.strip():
+            raise HTTPException(status_code=400, detail="Host address is required")
+        if request.port < 1 or request.port > 65535:
+            raise HTTPException(status_code=400, detail="Port must be between 1 and 65535")
+        
+        # Normalize host (remove whitespace)
+        host = request.host.strip()
+        
+        # Warn if using localhost for cross-device connection
+        if host in ("localhost", "127.0.0.1") and request.port != 5000:
+            logger.warning(f"Using localhost for connection - this may not work for cross-device connections. Use actual IP address instead.")
+        
+        logger.info(f"Attempting to connect to peer at {host}:{request.port}")
+        success = get_p2p_service().connect_to_peer(host, request.port)
         if not success:
             raise HTTPException(
                 status_code=400, 
-                detail=f"Failed to connect to peer at {request.host}:{request.port}. "
-                       f"Please ensure the peer is running and reachable, and that the host and port are correct."
+                detail=f"Failed to connect to peer at {host}:{request.port}. "
+                       f"Possible causes: (1) Peer is not running, (2) Incorrect host/port, "
+                       f"(3) Firewall blocking connection, (4) Network unreachable. "
+                       f"Use 'python test_peer_connection.py {host} {request.port}' to diagnose."
             )
-        return {"status": "connected"}
+        logger.info(f"Successfully connected to peer at {host}:{request.port}")
+        return {"status": "connected", "host": host, "port": request.port}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error connecting to peer {request.host}:{request.port}: {e}", exc_info=True)
         raise HTTPException(
             status_code=400,
-            detail=f"Connection error: {str(e)}. Please check that the peer is running and accessible."
+            detail=f"Connection error: {str(e)}. Please check that the peer is running and accessible. "
+                   f"Verify network connectivity and firewall settings."
         )
 
 

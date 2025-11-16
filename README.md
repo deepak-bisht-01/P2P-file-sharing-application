@@ -63,6 +63,15 @@ npm install
 
 ### Option 1: Run API Server with Startup Script (Recommended)
 
+**On Windows (PowerShell):**
+```powershell
+# From project root
+python start_api.py --port 5000 --api-port 8000
+# OR use explicit path notation:
+.\start_api.py --port 5000 --api-port 8000
+```
+
+**On Linux/Mac:**
 ```bash
 # From project root
 python start_api.py --port 5000 --api-port 8000
@@ -74,9 +83,19 @@ This starts:
 
 ### Option 2: Run API Server with Uvicorn Directly
 
+**On Windows (PowerShell):**
+```powershell
+# Set peer port (optional, defaults to 5000)
+$env:PEER_PORT=5000
+
+# Start the API server
+python -m uvicorn src.backend.api:app --host 0.0.0.0 --port 8000
+```
+
+**On Linux/Mac:**
 ```bash
 # Set peer port (optional, defaults to 5000)
-export PEER_PORT=5000  # On Windows: set PEER_PORT=5000
+export PEER_PORT=5000
 
 # Start the API server
 python -m uvicorn src.backend.api:app --host 0.0.0.0 --port 8000
@@ -86,11 +105,23 @@ python -m uvicorn src.backend.api:app --host 0.0.0.0 --port 8000
 
 In a separate terminal:
 
+**On Windows (PowerShell):**
+```powershell
+cd frontend
+
+# Set API URL if different from default
+$env:VITE_API_BASE_URL="http://localhost:8000"
+
+# Start development server
+npm run dev
+```
+
+**On Linux/Mac:**
 ```bash
 cd frontend
 
 # Set API URL if different from default
-export VITE_API_BASE_URL=http://localhost:8000  # On Windows: set VITE_API_BASE_URL=http://localhost:8000
+export VITE_API_BASE_URL=http://localhost:8000
 
 # Start development server
 npm run dev
@@ -238,8 +269,101 @@ p2p-chat --port 5000
 
 ## Troubleshooting
 
-- **Port already in use**: Change the port using `--port` flag or `PEER_PORT` environment variable
+### Port Already in Use
+
+If you see the error `[Errno 10048] only one usage of each socket address (protocol/network address/port) is normally permitted`, it means the server is already running on that port.
+
+**Check if server is running:**
+```powershell
+# Windows PowerShell
+netstat -ano | findstr :8000
+
+# Linux/Mac
+lsof -i :8000
+```
+
+**Stop the existing server:**
+```powershell
+# Windows PowerShell - Find and kill the process
+$processId = (Get-NetTCPConnection -LocalPort 8000).OwningProcess
+Stop-Process -Id $processId -Force
+
+# Or manually: Find PID from netstat, then:
+# Stop-Process -Id <PID> -Force
+```
+
+```bash
+# Linux/Mac - Find and kill the process
+kill $(lsof -t -i:8000)
+```
+
+**Alternative: Use a different port:**
+```powershell
+# Windows PowerShell
+python start_api.py --port 5000 --api-port 8001
+```
+
+### Peer Connection Issues Between Devices
+
+If you cannot establish connections between two separate devices:
+
+**1. Test the connection first:**
+```powershell
+# Windows PowerShell - Test if peer is reachable
+python test_peer_connection.py <device-ip> <port>
+
+# Example:
+python test_peer_connection.py 192.168.1.100 5000
+```
+
+**2. Verify both devices are set up correctly:**
+- **Device 1**: `python start_api.py --port 5000 --api-port 8000`
+- **Device 2**: `python start_api.py --port 5001 --api-port 8000` (or same port if different machines)
+
+**3. Check IP addresses:**
+```powershell
+# Windows PowerShell - Get your IP address
+ipconfig
+# Look for "IPv4 Address" under your network adapter (e.g., 192.168.1.100)
+```
+
+**4. Use actual IP addresses, not localhost:**
+- ❌ **Wrong**: `127.0.0.1:5000` or `localhost:5000` (only works on same machine)
+- ✅ **Correct**: `192.168.1.100:5000` (use the actual IP address)
+
+**5. Check Windows Firewall:**
+```powershell
+# Allow Python through Windows Firewall
+# Go to: Windows Security > Firewall & network protection > Allow an app through firewall
+# Add Python and allow both Private and Public networks
+```
+
+**6. Test network connectivity:**
+```powershell
+# Ping the other device
+ping <device-ip>
+
+# Test if port is reachable
+Test-NetConnection -ComputerName <device-ip> -Port <peer-port>
+```
+
+**7. Common connection errors and solutions:**
+
+| Error | Cause | Solution |
+|-------|-------|----------|
+| Connection timeout | Firewall blocking or peer not running | Check firewall, verify peer is running |
+| Connection refused | Wrong port or peer not listening | Verify port number, check peer logs |
+| Network unreachable | Wrong IP address or different network | Use correct IP, ensure same network |
+| 400 Bad Request | Connection failed | Use diagnostic script to test connection |
+
+**8. Verify connection in logs:**
+- Check backend console for: `"Successfully connected to peer at <ip>:<port>"`
+- Check for errors: `"Failed to connect to peer"` or `"Connection timeout"`
+
+### Other Common Issues
+
 - **Frontend can't connect**: Ensure the API server is running and `VITE_API_BASE_URL` is set correctly
-- **Peer connection fails**: Check firewall settings and ensure peers are accessible on the specified ports
+- **Module not found errors**: Make sure you're running commands from the project root directory
+- **Handshake fails**: Wait a few seconds after connecting - handshake may take time
 
 
