@@ -174,32 +174,68 @@ class P2PService:
         # Mark peer as seen/online
         self.peer_registry.mark_peer_seen(sender_id)
         
-        # Explicitly associate temp connection ID with real peer ID
-        # This is critical for Device 2 to show the connection as active
-        temp_id = f"{peer.address}:{peer.port}"
+        # Find the connection that sent this handshake
+        # The connection might be registered with:
+        # 1. The remote address (for incoming connections)
+        # 2. The advertised address:port (for outgoing connections)
+        # 3. A temp ID that matches the sender's address
         active_connections_before = set(self.connection_manager.get_active_connections())
-        logger.info(f"Before association, active connections: {[c[:8] for c in active_connections_before]}, temp_id: {temp_id[:8] if len(temp_id) > 8 else temp_id}")
+        logger.info(f"Before association, active connections: {[c[:8] if len(c) > 8 else c for c in active_connections_before]}")
         
-        # Try to associate the temp ID with the real peer ID
-        # This ensures Device 2 properly tracks the connection
+        # Try to find the connection by matching addresses
+        # First, try the advertised address:port from handshake
+        advertised_address = peer_info.get("address", "unknown")
+        advertised_port = peer_info.get("port", 0)
+        temp_id_candidates = [
+            f"{advertised_address}:{advertised_port}",  # Advertised address:port
+        ]
+        
+        # Also try to find by matching any connection that has the sender's address
+        # This handles incoming connections where we only know the remote IP
+        connection_manager_state = self.connection_manager.dump_state()
+        for conn_info in connection_manager_state.get("connections", []):
+            conn_address = conn_info.get("address", "")
+            if advertised_address in conn_address or conn_address.startswith(advertised_address.split('.')[0] if '.' in advertised_address else advertised_address):
+                # Found a connection that might match
+                conn_peer_id = conn_info.get("peer_id", "")
+                if conn_peer_id and conn_peer_id not in temp_id_candidates:
+                    temp_id_candidates.append(conn_peer_id)
+        
+        # Try each candidate to find and associate the connection
         association_success = False
-        if temp_id in active_connections_before:
-            association_success = self.connection_manager.associate_temp_id_with_peer_id(temp_id, sender_id)
-            if association_success:
-                logger.info(f"Successfully associated temp_id {temp_id[:8]} with real_id {sender_id[:8]}")
+        for temp_id in temp_id_candidates:
+            if temp_id in active_connections_before:
+                association_success = self.connection_manager.associate_temp_id_with_peer_id(temp_id, sender_id)
+                if association_success:
+                    logger.info(f"Successfully associated temp_id {temp_id[:8] if len(temp_id) > 8 else temp_id} with real_id {sender_id[:8]}")
+                    break
+        
+        # If no association worked, try to find connection by sender_id (might already be associated)
+        if not association_success:
+            active_conns = self.connection_manager.get_active_connections()
+            if sender_id in active_conns:
+                logger.info(f"Connection already associated with {sender_id[:8]}")
+                association_success = True
             else:
-                logger.warning(f"Failed to associate temp_id {temp_id[:8]} with real_id {sender_id[:8]}")
+                # Try to find any connection that might be for this peer
+                # Look for connections with matching address
+                for conn_id in active_conns:
+                    if advertised_address in conn_id or (':' in conn_id and conn_id.split(':')[0] == advertised_address.split('.')[0] if '.' in advertised_address else advertised_address):
+                        # Try associating this connection
+                        association_success = self.connection_manager.associate_temp_id_with_peer_id(conn_id, sender_id)
+                        if association_success:
+                            logger.info(f"Found and associated connection {conn_id[:8]} with {sender_id[:8]}")
+                            break
         
         # Wait a moment for connection association to complete
         import time
-        time.sleep(0.2)  # Give connection manager time to complete association
+        time.sleep(0.1)  # Give connection manager time to complete association
         
         # Check if connection is active - try multiple ways to find it
         active_connections = set(self.connection_manager.get_active_connections())
-        logger.info(f"After handshake, active connections: {[c[:8] for c in active_connections]}, looking for {sender_id[:8]}")
+        logger.info(f"After handshake, active connections: {[c[:8] if len(c) > 8 else c for c in active_connections]}, looking for {sender_id[:8]}")
         
         # Verify the connection is in active connections
-        # The connection might still be under a temp ID, so we need to find it
         connection_found = sender_id in active_connections
         temp_connection_id = None
         

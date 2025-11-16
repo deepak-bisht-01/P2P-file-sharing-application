@@ -94,52 +94,66 @@ class ConnectionManager:
                 time.sleep(1)  # Brief pause before retrying
     
     def add_connection(self, sock: socket.socket, address: Tuple[str, int], peer_id: str = None):
-        """Add a new connection"""
+        """Add a new connection
+        
+        Allows bidirectional connections: when Device 1 connects to Device 2 and Device 2 connects back,
+        both connections are maintained. Uses socket file descriptor to distinguish connections.
+        """
         with self.lock:
             if not peer_id:
                 peer_id = f"{address[0]}:{address[1]}"
             
-            # Check by address first to avoid duplicate connections from same address
+            # Get socket identifier (file descriptor) to distinguish connections
+            try:
+                sock_fd = sock.fileno()
+            except (OSError, AttributeError):
+                # Fallback: use id() if fileno() not available
+                sock_fd = id(sock)
+            
+            # Check if this exact socket is already registered
+            for existing_peer_id, existing_conn in list(self.connections.items()):
+                if existing_conn.socket == sock:
+                    self.logger.debug(f"Socket already registered with peer_id {existing_peer_id}")
+                    return
+            
+            # Check if we have an existing connection to the same address with the same peer_id
+            # Only replace if it's the same peer_id (reconnection scenario), not for bidirectional connections
             if address in self.address_to_peer:
                 old_peer_id = self.address_to_peer[address]
                 if old_peer_id in self.connections:
                     existing_conn = self.connections[old_peer_id]
-                    # Check if it's the same socket (shouldn't happen, but be safe)
-                    if existing_conn.socket == sock:
-                        self.logger.debug(f"Connection from {address} already registered with same socket")
-                        return
-                    # If old connection is still active, close it (reconnection scenario)
-                    if existing_conn.is_active:
-                        self.logger.info(f"Replacing existing connection from {address} (old peer_id: {old_peer_id})")
-                        existing_conn.is_active = False
-                        try:
-                            existing_conn.socket.close()
-                        except:
-                            pass
-                    # Remove old connection
-                    del self.connections[old_peer_id]
-                    del self.address_to_peer[address]
+                    # Only replace if it's the same peer_id AND different socket (reconnection)
+                    # If it's a different peer_id, allow both (bidirectional connection)
+                    if existing_conn.socket != sock:
+                        if old_peer_id == peer_id:
+                            # Same peer_id, different socket = reconnection, replace old one
+                            self.logger.info(f"Replacing existing connection from {address} (reconnection: {old_peer_id})")
+                            existing_conn.is_active = False
+                            try:
+                                existing_conn.socket.close()
+                            except:
+                                pass
+                            del self.connections[old_peer_id]
+                            del self.address_to_peer[address]
+                        else:
+                            # Different peer_id = bidirectional connection, use unique key
+                            # Create unique peer_id that includes socket identifier
+                            unique_peer_id = f"{peer_id}-fd{sock_fd}"
+                            peer_id = unique_peer_id
+                            self.logger.info(f"Bidirectional connection detected: {address} -> {old_peer_id} and {unique_peer_id}")
             
-            # Check if peer_id already exists (might be from a different address)
+            # Check if peer_id already exists with different socket
             if peer_id in self.connections:
                 existing_conn = self.connections[peer_id]
                 if existing_conn.socket == sock:
                     # Same socket, already registered
                     self.logger.debug(f"Connection {peer_id} already registered with same socket")
                     return
-                # Different socket with same peer_id - close old one
-                if existing_conn.is_active:
-                    self.logger.warning(f"Duplicate connection for peer_id {peer_id}, closing old socket")
-                    existing_conn.is_active = False
-                    try:
-                        existing_conn.socket.close()
-                    except:
-                        pass
-                # Clean up old connection
-                if existing_conn.address in self.address_to_peer:
-                    del self.address_to_peer[existing_conn.address]
-                del self.connections[peer_id]
-        
+                # Different socket with same peer_id - create unique identifier
+                unique_peer_id = f"{peer_id}-fd{sock_fd}"
+                self.logger.info(f"Multiple connections for {peer_id}, using unique ID: {unique_peer_id}")
+                peer_id = unique_peer_id
+            
             # Set socket options for better reliability
             try:
                 sock.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
@@ -150,7 +164,13 @@ class ConnectionManager:
         
             conn = Connection(sock, address, peer_id)
             self.connections[peer_id] = conn
-            self.address_to_peer[address] = peer_id
+            # Only update address_to_peer if this is the primary connection (not a bidirectional one)
+            # For bidirectional connections, we track by unique peer_id
+            if address not in self.address_to_peer or not any(
+                c.socket != sock and c.address == address 
+                for c in self.connections.values()
+            ):
+                self.address_to_peer[address] = peer_id
 
         # ✅ also register the peer (outside lock to avoid deadlock)
         if self.peer_registry:
@@ -285,28 +305,71 @@ class ConnectionManager:
         self.remove_connection(conn.peer_id)
     
     def send_message(self, peer_id: str, message: bytes) -> bool:
-        """Send message to a specific peer (message should be length-prefixed)"""
+        """Send message to a specific peer (message should be length-prefixed)
+        
+        If multiple connections exist for the same peer (bidirectional), tries all of them.
+        """
         with self.lock:
+            # First, try exact peer_id match
             if peer_id in self.connections:
                 conn = self.connections[peer_id]
-                if not conn.is_active:
-                    return False
-                try:
-                    with conn.lock:
-                        conn.socket.sendall(message)
-                    # Update last activity on successful send
-                    conn.last_activity = time.time()
-                    return True
-                except (ConnectionResetError, BrokenPipeError, OSError) as e:
-                    errno = getattr(e, 'winerror', getattr(e, 'errno', None))
-                    if errno in (10054, 10053, 10038):  # Windows connection errors
-                        self.logger.warning(f"Connection {peer_id} closed during send: {e}")
-                    else:
+                if conn.is_active:
+                    try:
+                        with conn.lock:
+                            conn.socket.sendall(message)
+                        conn.last_activity = time.time()
+                        return True
+                    except (ConnectionResetError, BrokenPipeError, OSError) as e:
+                        errno = getattr(e, 'winerror', getattr(e, 'errno', None))
+                        if errno in (10054, 10053, 10038):  # Windows connection errors
+                            self.logger.warning(f"Connection {peer_id} closed during send: {e}")
+                        else:
+                            self.logger.error(f"Failed to send message to {peer_id}: {e}")
+                        self.remove_connection(peer_id)
+                    except Exception as e:
                         self.logger.error(f"Failed to send message to {peer_id}: {e}")
-                    self.remove_connection(peer_id)
-                except Exception as e:
-                    self.logger.error(f"Failed to send message to {peer_id}: {e}")
-                    self.remove_connection(peer_id)
+                        self.remove_connection(peer_id)
+            
+            # If exact match failed or not found, try connections that match the peer_id
+            # (handles cases where peer_id was updated after handshake but connection key wasn't)
+            # Also try connections to the same address
+            for conn_id, conn in list(self.connections.items()):
+                if conn_id == peer_id:
+                    continue  # Already tried above
+                
+                # Check if this connection is for the same peer (by address or peer_id prefix)
+                # For bidirectional connections, we might have peer_id-fdXXX format
+                if peer_id in conn_id or conn_id.startswith(peer_id.split('-')[0]):
+                    if conn.is_active:
+                        try:
+                            with conn.lock:
+                                conn.socket.sendall(message)
+                            conn.last_activity = time.time()
+                            self.logger.debug(f"Sent message via alternative connection {conn_id} for peer {peer_id}")
+                            return True
+                        except (ConnectionResetError, BrokenPipeError, OSError):
+                            # Connection failed, continue to next
+                            continue
+                        except Exception:
+                            continue
+            
+            # Also try by address if peer_id looks like address:port
+            if ':' in peer_id and not '-' in peer_id:
+                # Looks like address:port format
+                for conn_id, conn in list(self.connections.items()):
+                    if conn.address[0] == peer_id.split(':')[0] and str(conn.address[1]) == peer_id.split(':')[1]:
+                        if conn.is_active:
+                            try:
+                                with conn.lock:
+                                    conn.socket.sendall(message)
+                                conn.last_activity = time.time()
+                                self.logger.debug(f"Sent message via address match {conn_id} for peer {peer_id}")
+                                return True
+                            except (ConnectionResetError, BrokenPipeError, OSError):
+                                continue
+                            except Exception:
+                                continue
+        
         return False
     
     def broadcast_message(self, message: bytes, exclude_peer: str = None):
@@ -334,12 +397,24 @@ class ConnectionManager:
                 self.logger.info(f"Removed connection for peer {peer_id}")
     
     def get_active_connections(self) -> List[str]:
-        """Get list of active peer IDs"""
+        """Get list of active peer IDs
+        
+        Returns all active connections. For bidirectional connections (same peer, multiple sockets),
+        both connections are included so the count reflects the actual number of active socket connections.
+        This allows proper counting: 1 connection when one side connects, 2 connections when both sides connect.
+        """
         with self.lock:
-            # Only return connections that are actually active
-            return [peer_id for peer_id, conn in self.connections.items() if conn.is_active]
+            # Return all active connections (including bidirectional ones)
+            # This allows counting: 1 when one device connects, 2 when both devices connect
+            active_connections = []
+            for peer_id, conn in self.connections.items():
+                if conn.is_active:
+                    active_connections.append(peer_id)
+            return active_connections
     def associate_temp_id_with_peer_id(self, temp_id: str, real_id: str, lock_held: bool = False) -> bool:
         """Replace a temporary peer_id (like 'host:port') with the real peer_id after handshake
+        
+        For bidirectional connections, preserves both connections by using unique keys.
         
         Args:
             temp_id: Temporary peer ID (usually address:port)
@@ -356,7 +431,7 @@ class ConnectionManager:
 
             new_conn = self.connections[temp_id]
             
-            # If real_id already exists, we need to handle the duplicate connection
+            # If real_id already exists, check if it's the same socket or a different one
             if real_id in self.connections:
                 existing_conn = self.connections[real_id]
                 
@@ -371,19 +446,31 @@ class ConnectionManager:
                     self.logger.info(f"Connection {temp_id} already associated with {real_id}")
                     return True
                 
-                # Different connections to the same peer - keep the newer one (the one we're updating)
-                self.logger.warning(f"Duplicate connection to {real_id}: closing old connection (socket: {existing_conn.socket.fileno()})")
-                existing_conn.is_active = False
+                # Different sockets to the same peer = bidirectional connection
+                # Keep both connections by using unique keys
                 try:
-                    existing_conn.socket.close()
-                except:
-                    pass
-                # Clean up old connection's address mapping
-                if existing_conn.address in self.address_to_peer:
-                    del self.address_to_peer[existing_conn.address]
-                del self.connections[real_id]
+                    sock_fd = new_conn.socket.fileno()
+                except (OSError, AttributeError):
+                    sock_fd = id(new_conn.socket)
+                
+                unique_real_id = f"{real_id}-fd{sock_fd}"
+                self.logger.info(f"Bidirectional connection detected for {real_id}: keeping both connections ({real_id} and {unique_real_id})")
+                
+                # Update the temp connection to use unique real_id
+                conn = self.connections.pop(temp_id)
+                conn.peer_id = unique_real_id
+                self.connections[unique_real_id] = conn
+                
+                # Update address→peer map (keep both mappings)
+                for addr, pid in list(self.address_to_peer.items()):
+                    if pid == temp_id:
+                        # Don't overwrite existing mapping, just add new one
+                        pass
+                
+                self.logger.info(f"Associated temp_id {temp_id} with unique real_id {unique_real_id} (bidirectional)")
+                return True
 
-            # Move connection under new key
+            # No existing connection with real_id, just update the temp_id
             conn = self.connections.pop(temp_id)
             conn.peer_id = real_id
             self.connections[real_id] = conn
