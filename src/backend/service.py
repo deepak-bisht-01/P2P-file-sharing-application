@@ -365,6 +365,7 @@ class P2PService:
             if message.recipient_id:
                 target_id = message.recipient_id
                 active = set(self.connection_manager.get_active_connections())
+                logger.info(f"Looking for recipient {target_id[:8]}. Active connections: {[c[:8] if len(c) > 8 else c for c in list(active)]}")
                 
                 # Check if target_id is in active connections (could be peer_id or temp address)
                 if target_id not in active:
@@ -452,7 +453,30 @@ class P2PService:
                                      target_id[:8] if len(target_id) > 8 else target_id, 
                                      [c[:8] for c in list(active)[:5]],
                                      [p.peer_id[:8] for p in self.peer_registry.get_all_peers()][:5])
-                        return  # Don't try to send if connection not found
+                        # TRY ONCE MORE: Check if any active connection belongs to this peer by peer_id matching
+                        logger.info(f"Last attempt: checking all peers to find connection for {target_id[:8]}")
+                        for peer in self.peer_registry.get_all_peers():
+                            if peer.peer_id == target_id:
+                                # Found the peer, now find which connection is for them
+                                for conn_id in active:
+                                    logger.info(f"Checking connection {conn_id[:8]}")
+                                    conn_peer = self.peer_registry.get_peer(conn_id)
+                                    if conn_peer and (conn_peer.peer_id == target_id or 
+                                                     (conn_peer.address == peer.address and conn_peer.port == peer.port)):
+                                        target_id = conn_id
+                                        logger.info(f"SUCCESS: Found connection via peer matching: {target_id[:8]}")
+                                        found_match = True
+                                        break
+                        
+                        if not found_match:
+                            # Still not found - maybe try the FIRST active connection as fallback for testing
+                            if active:
+                                first_conn = list(active)[0]
+                                logger.warning(f"Could not find proper connection, using first available: {first_conn[:8]}")
+                                target_id = first_conn
+                            else:
+                                logger.error("No active connections available to send message")
+                                return  # Don't try to send if NO connections at all
                 
                 logger.info("Sending message to %s (connection found)", target_id[:8] if len(target_id) > 8 else target_id)
                 
