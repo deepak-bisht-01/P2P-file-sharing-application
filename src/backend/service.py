@@ -174,6 +174,12 @@ class P2PService:
         # Mark peer as seen/online
         self.peer_registry.mark_peer_seen(sender_id)
         
+        # Clean up any temporary peer entries (address:port format) for this peer
+        temp_peer_id = f"{peer_info.get('address', 'unknown')}:{peer_info.get('port', 0)}"
+        if temp_peer_id != sender_id:  # Only clean up if the real ID is different
+            self.peer_registry.remove_peer(temp_peer_id)
+            logger.info(f"Removed temporary peer entry {temp_peer_id} (real id: {sender_id[:8]})")
+        
         # Find the connection that sent this handshake
         # The connection might be registered with:
         # 1. The remote address (for incoming connections)
@@ -530,7 +536,8 @@ class P2PService:
 
     def list_peers(self) -> List[Dict]:
         peers = self.peer_registry.get_all_peers()
-        return [peer.to_dict() for peer in peers]
+        # Filter out self from the peer list
+        return [peer.to_dict() for peer in peers if peer.peer_id != self.identity.peer_id]
 
     def list_connected_peers(self) -> List[Dict]:
         peers = self.peer_registry.list_connected_peers()
